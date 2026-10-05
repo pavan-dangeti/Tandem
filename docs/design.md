@@ -57,13 +57,13 @@ the spirit of Figma or Google Docs.
 ### Sync protocol (versioned; `docs/protocol.md`)
 
 1. Client connects over WebSocket, sends `Hello { protocolVersion, boardId,
-   authToken, stateVector }`.
+authToken, stateVector }`.
 2. Server validates auth + role, then sends `SyncResponse { missingOps }`
    computed from the state vector; nothing else is replayed.
 3. Steady state: batched `OpBatch` messages, `Ack` messages (per batch,
    per-op offsets), client-side backpressure (server stops sending when
    > N unacked ops in flight), and separate ephemeral `Presence` messages
-   (cursor, selection, display name, color) that are never persisted.
+   > (cursor, selection, display name, color) that are never persisted.
 4. Encoding: a small custom binary format (varint-framed messages, compact
    op structure), with bytes/op reported by the benchmark harness.
 
@@ -151,16 +151,16 @@ StateVector: Map<ActorId, number>
 
 ## Threat model
 
-| Threat | Mitigation |
-| --- | --- |
-| Malformed/oversized ops | Schema validation, per-message size cap (64 KiB), per-op target size cap |
-| Viewer emits ops | Server-side role check before validation/persist; rejects with 403 |
-| Share-token forgery | HMAC-signed tokens, expiry, secret rotation documented in runbook |
+| Threat                      | Mitigation                                                                 |
+| --------------------------- | -------------------------------------------------------------------------- |
+| Malformed/oversized ops     | Schema validation, per-message size cap (64 KiB), per-op target size cap   |
+| Viewer emits ops            | Server-side role check before validation/persist; rejects with 403         |
+| Share-token forgery         | HMAC-signed tokens, expiry, secret rotation documented in runbook          |
 | XSS via text/sticky content | Rendered as plain text on canvas; no `innerHTML`/DOM injection; strict CSP |
-| DoS via connection floods | Per-IP and per-user rate limits; WebSocket message rate cap |
-| Op-log bloat / GC abuse | Tombstone GC only after causal stability; snapshot cadence bounds load |
-| Server impersonation | TLS only; HSTS; signed cookies/JWT for the WS handshake |
-| Redis/Postgres exposure | Private network; no public ports; least-privilege credentials in env |
+| DoS via connection floods   | Per-IP and per-user rate limits; WebSocket message rate cap                |
+| Op-log bloat / GC abuse     | Tombstone GC only after causal stability; snapshot cadence bounds load     |
+| Server impersonation        | TLS only; HSTS; signed cookies/JWT for the WS handshake                    |
+| Redis/Postgres exposure     | Private network; no public ports; least-privilege credentials in env       |
 
 ## Risks
 
@@ -175,15 +175,15 @@ StateVector: Map<ActorId, number>
 
 ## Distribution / what ships at each phase
 
-| Phase | Deliverable |
-| --- | --- |
-| 0 | This document, ADRs, hosting decision |
-| 1 | pnpm monorepo scaffold, strict TS, CI, Docker Compose |
-| 2 | `packages/crdt`, PBT, benchmark harness vs Yjs/Automerge |
-| 3 | Sync server, protocol, persistence, snapshots, auth, protocol tests |
-| 4 | Web client: canvas tools, presence, undo/redo, offline |
-| 5 | Multi-node fan-out, load tests, toxiproxy chaos, crash recovery |
-| 6 | Observability, security hardening, demo deploy, docs, release v1.0.0 |
+| Phase | Deliverable                                                          |
+| ----- | -------------------------------------------------------------------- |
+| 0     | This document, ADRs, hosting decision                                |
+| 1     | pnpm monorepo scaffold, strict TS, CI, Docker Compose                |
+| 2     | `packages/crdt`, PBT, benchmark harness vs Yjs/Automerge             |
+| 3     | Sync server, protocol, persistence, snapshots, auth, protocol tests  |
+| 4     | Web client: canvas tools, presence, undo/redo, offline               |
+| 5     | Multi-node fan-out, load tests, toxiproxy chaos, crash recovery      |
+| 6     | Observability, security hardening, demo deploy, docs, release v1.0.0 |
 
 ## Open questions for review
 
