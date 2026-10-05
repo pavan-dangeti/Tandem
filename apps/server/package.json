@@ -1,0 +1,21 @@
+{
+  "name": "@tandem/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -b",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@tandem/crdt": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.1",
+    "tsx": "^4.23.15"
+  }
+}
