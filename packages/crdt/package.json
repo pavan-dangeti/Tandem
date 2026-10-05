@@ -10,6 +10,14 @@
     "build": "tsc -b",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bench": "tsx bench/run.ts"
+  },
+  "devDependencies": {
+    "@automerge/automerge": "^3.5.0",
+    "@types/node": "^26.6.4",
+    "fast-check": "^4.10.2",
+    "tsx": "^4.23.15",
+    "yjs": "^13.6.33"
   }
 }

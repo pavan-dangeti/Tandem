@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (Phase 0)
+Superseded by 0003. Original decision: Fugue.
 
 ## Context
 
@@ -10,7 +10,7 @@ Ordered collections — the z-order of shapes and text runs — need a sequence
 CRDT so concurrent insertions converge without a central sequencer. The two
 serious candidates are RGA (Replicated Growable Array) and Fugue.
 
-## Decision
+## Decision (superseded)
 
 Adopt Fugue for position identifiers.
 
