@@ -82,7 +82,10 @@ function readValue(b: Uint8Array, off: number): { v: Value; off: number } {
       return { v: { kind: "bool", v: b[off++] === 1 }, off };
     case 2: {
       const { n, off: o2 } = readVarint(b, off);
-      return { v: { kind: "int", v: n % 2 === 0 ? n / 2 : -(n + 1) / 2 }, off: o2 };
+      return {
+        v: { kind: "int", v: n % 2 === 0 ? n / 2 : -(n + 1) / 2 },
+        off: o2,
+      };
     }
     case 3: {
       const d = new DataView(b.buffer, b.byteOffset + off, 8);

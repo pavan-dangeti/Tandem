@@ -55,7 +55,10 @@ export class RGA<V> {
     const key = rgaIdKey(id);
     const existing = this.nodes.get(key);
     if (existing !== undefined) {
-      if (hlc !== undefined && (existing.flagHlc === null || hlcCompare(hlc, existing.flagHlc) > 0)) {
+      if (
+        hlc !== undefined &&
+        (existing.flagHlc === null || hlcCompare(hlc, existing.flagHlc) > 0)
+      ) {
         existing.flagHlc = hlc;
         existing.deleted = false;
       }
@@ -72,9 +75,20 @@ export class RGA<V> {
     return true;
   }
 
-  private place(id: RGAId, parentKey: string | null, value: V, hlc?: HLC): void {
+  private place(
+    id: RGAId,
+    parentKey: string | null,
+    value: V,
+    hlc?: HLC,
+  ): void {
     const key = rgaIdKey(id);
-    this.nodes.set(key, { id, value, parent: parentKey, deleted: false, flagHlc: hlc ?? null });
+    this.nodes.set(key, {
+      id,
+      value,
+      parent: parentKey,
+      deleted: false,
+      flagHlc: hlc ?? null,
+    });
     const intents = this.pendingDeletes.get(key);
     if (intents !== undefined) {
       this.pendingDeletes.delete(key);
@@ -116,7 +130,11 @@ export class RGA<V> {
       }
       return false;
     }
-    if (n.flagHlc === null || hlc === undefined || hlcCompare(hlc, n.flagHlc) > 0) {
+    if (
+      n.flagHlc === null ||
+      hlc === undefined ||
+      hlcCompare(hlc, n.flagHlc) > 0
+    ) {
       n.deleted = true;
       n.flagHlc = hlc ?? n.flagHlc;
     }
@@ -126,7 +144,11 @@ export class RGA<V> {
   undelete(id: RGAId, hlc?: HLC): boolean {
     const n = this.nodes.get(rgaIdKey(id));
     if (n === undefined) return false;
-    if (n.flagHlc === null || hlc === undefined || hlcCompare(hlc, n.flagHlc) > 0) {
+    if (
+      n.flagHlc === null ||
+      hlc === undefined ||
+      hlcCompare(hlc, n.flagHlc) > 0
+    ) {
       n.deleted = false;
       n.flagHlc = hlc ?? n.flagHlc;
     }

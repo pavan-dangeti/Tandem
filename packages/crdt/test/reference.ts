@@ -31,7 +31,15 @@ interface TNode {
 }
 
 export interface RefState {
-  objects: Map<string, { type: string; typeHlc: HLC | null; props: Map<string, { value: Value | { kind: "removed" }; hlc: HLC }>; deleted: { tag: "delete" | "restore"; hlc: HLC } | null }>;
+  objects: Map<
+    string,
+    {
+      type: string;
+      typeHlc: HLC | null;
+      props: Map<string, { value: Value | { kind: "removed" }; hlc: HLC }>;
+      deleted: { tag: "delete" | "restore"; hlc: HLC } | null;
+    }
+  >;
   znodes: Map<string, ZNode>;
   texts: Map<string, TNode[]>;
 }
@@ -58,16 +66,19 @@ export function refApply(st: RefState, op: Op): void {
       const o = st.objects.get(s.objId);
       if (!o) break;
       const tag = s.t === "deleteObject" ? "delete" : "restore";
-      if (o.deleted === null || cmp(hlc, o.deleted.hlc) > 0) o.deleted = { tag, hlc };
+      if (o.deleted === null || cmp(hlc, o.deleted.hlc) > 0)
+        o.deleted = { tag, hlc };
       break;
     }
     case "putProp":
     case "removeProp": {
       const o = st.objects.get(s.objId);
       if (!o) break;
-      const value: Value | { kind: "removed" } = s.t === "putProp" ? s.value : { kind: "removed" };
+      const value: Value | { kind: "removed" } =
+        s.t === "putProp" ? s.value : { kind: "removed" };
       const cur = o.props.get(s.key);
-      if (cur === undefined || cmp(hlc, cur.hlc) > 0) o.props.set(s.key, { value, hlc });
+      if (cur === undefined || cmp(hlc, cur.hlc) > 0)
+        o.props.set(s.key, { value, hlc });
       break;
     }
     case "zInsert":
@@ -75,10 +86,16 @@ export function refApply(st: RefState, op: Op): void {
       const key = keyOf(rgaIdOf(s.objId));
       let n = st.znodes.get(key);
       if (!n) {
-        n = { objId: s.objId, parent: s.t === "zInsert" ? s.parent : null, removed: false, flagHlc: null };
+        n = {
+          objId: s.objId,
+          parent: s.t === "zInsert" ? s.parent : null,
+          removed: false,
+          flagHlc: null,
+        };
         st.znodes.set(key, n);
       }
-      if (s.t === "zInsert" && n.parent === null && s.parent !== null) n.parent = s.parent;
+      if (s.t === "zInsert" && n.parent === null && s.parent !== null)
+        n.parent = s.parent;
       if (n.flagHlc === null || cmp(hlc, n.flagHlc) > 0) {
         n.removed = s.t === "zRemove";
         n.flagHlc = hlc;
@@ -89,9 +106,17 @@ export function refApply(st: RefState, op: Op): void {
     case "textRemove": {
       const list = st.texts.get(s.objId);
       if (!list) break;
-      let n = list.find((x) => x.id.actor === s.id.actor && x.id.counter === s.id.counter);
+      let n = list.find(
+        (x) => x.id.actor === s.id.actor && x.id.counter === s.id.counter,
+      );
       if (s.t === "textInsert" && !n) {
-        n = { id: s.id, parent: s.parent, ch: s.ch, removed: false, flagHlc: null };
+        n = {
+          id: s.id,
+          parent: s.parent,
+          ch: s.ch,
+          removed: false,
+          flagHlc: null,
+        };
         list.push(n);
       }
       if (n && (n.flagHlc === null || cmp(hlc, n.flagHlc) > 0)) {
@@ -103,7 +128,12 @@ export function refApply(st: RefState, op: Op): void {
   }
 }
 
-function refRgaWalk<V extends { removed: boolean }>(nodes: V[], getParentKey: (n: V) => string | null, getIdDesc: (n: V) => number, getIdActor: (n: V) => string): V[] {
+function refRgaWalk<V extends { removed: boolean }>(
+  nodes: V[],
+  getParentKey: (n: V) => string | null,
+  getIdDesc: (n: V) => number,
+  getIdActor: (n: V) => string,
+): V[] {
   const byParent = new Map<string | null, V[]>();
   for (const n of nodes) {
     const p = getParentKey(n);
@@ -112,7 +142,10 @@ function refRgaWalk<V extends { removed: boolean }>(nodes: V[], getParentKey: (n
     byParent.set(p, list);
   }
   for (const list of byParent.values()) {
-    list.sort((a, b) => getIdDesc(b) - getIdDesc(a) || (getIdActor(a) < getIdActor(b) ? 1 : -1));
+    list.sort(
+      (a, b) =>
+        getIdDesc(b) - getIdDesc(a) || (getIdActor(a) < getIdActor(b) ? 1 : -1),
+    );
   }
   const out: V[] = [];
   const walk = (pk: string | null): void => {
@@ -129,8 +162,16 @@ function refRgaWalk<V extends { removed: boolean }>(nodes: V[], getParentKey: (n
   return out;
 }
 
-export function refMaterialize(ops: Op[]): { shapes: { id: string; type: string; props: Record<string, Value> }[]; order: string[]; texts: Record<string, string> } {
-  const st: RefState = { objects: new Map(), znodes: new Map(), texts: new Map() };
+export function refMaterialize(ops: Op[]): {
+  shapes: { id: string; type: string; props: Record<string, Value> }[];
+  order: string[];
+  texts: Record<string, string>;
+} {
+  const st: RefState = {
+    objects: new Map(),
+    znodes: new Map(),
+    texts: new Map(),
+  };
   for (const op of ops) refApply(st, op);
   const zWalk = refRgaWalk(
     [...st.znodes.values()],
@@ -138,7 +179,10 @@ export function refMaterialize(ops: Op[]): { shapes: { id: string; type: string;
     (n) => Number(n.objId.slice(n.objId.lastIndexOf(":") + 1)),
     (n) => n.objId.slice(0, n.objId.lastIndexOf(":")),
   );
-  const order = zWalk.map((n) => `${n.removed ? "!" : ""}${n.objId.slice(0, n.objId.lastIndexOf(":"))}:${Number(n.objId.slice(n.objId.lastIndexOf(":") + 1))}`);
+  const order = zWalk.map(
+    (n) =>
+      `${n.removed ? "!" : ""}${n.objId.slice(0, n.objId.lastIndexOf(":"))}:${Number(n.objId.slice(n.objId.lastIndexOf(":") + 1))}`,
+  );
   const texts: Record<string, string> = {};
   for (const objId of [...st.texts.keys()].sort()) {
     const tWalk = refRgaWalk(
@@ -147,15 +191,20 @@ export function refMaterialize(ops: Op[]): { shapes: { id: string; type: string;
       (n) => n.id.counter,
       (n) => n.id.actor,
     );
-    texts[objId] = tWalk.filter((n) => !n.removed).map((n) => n.ch).join("");
+    texts[objId] = tWalk
+      .filter((n) => !n.removed)
+      .map((n) => n.ch)
+      .join("");
   }
-  const shapes: { id: string; type: string; props: Record<string, Value> }[] = [];
+  const shapes: { id: string; type: string; props: Record<string, Value> }[] =
+    [];
   for (const z of zWalk) {
     if (z.removed) continue;
     const o = st.objects.get(z.objId);
     if (!o || o.deleted?.tag === "delete") continue;
     const props: Record<string, Value> = {};
-    for (const [k, v] of o.props) if (v.value.kind !== "removed") props[k] = v.value as Value;
+    for (const [k, v] of o.props)
+      if (v.value.kind !== "removed") props[k] = v.value as Value;
     shapes.push({ id: z.objId, type: o.type, props });
   }
   return { shapes, order, texts };

@@ -106,14 +106,21 @@ export class Doc {
             id: s.objId,
             type: s.type,
             props: new Map(),
-            deleted: { tag: "restore", hlc: { wall: op.wall, logical: op.logical, actor: op.actor } },
+            deleted: {
+              tag: "restore",
+              hlc: { wall: op.wall, logical: op.logical, actor: op.actor },
+            },
             typeHlc: { wall: op.wall, logical: op.logical, actor: op.actor },
             text: new RGA(),
           };
           this.objects.set(s.objId, o);
           this.texts.set(s.objId, o.text);
         } else {
-          const hlc: HLC = { wall: op.wall, logical: op.logical, actor: op.actor };
+          const hlc: HLC = {
+            wall: op.wall,
+            logical: op.logical,
+            actor: op.actor,
+          };
           if (o.typeHlc === null || hlcCompare(hlc, o.typeHlc) > 0) {
             o.type = s.type;
             o.typeHlc = hlc;
@@ -129,14 +136,24 @@ export class Doc {
       }
       case "deleteObject": {
         const o = this.objects.get(s.objId);
-        const hlc: HLC = { wall: op.wall, logical: op.logical, actor: op.actor };
-        if (o && (o.deleted === null || hlcCompare(hlc, o.deleted.hlc) > 0)) o.deleted = { tag: "delete", hlc };
+        const hlc: HLC = {
+          wall: op.wall,
+          logical: op.logical,
+          actor: op.actor,
+        };
+        if (o && (o.deleted === null || hlcCompare(hlc, o.deleted.hlc) > 0))
+          o.deleted = { tag: "delete", hlc };
         break;
       }
       case "restoreObject": {
         const o = this.objects.get(s.objId);
-        const hlc: HLC = { wall: op.wall, logical: op.logical, actor: op.actor };
-        if (o && (o.deleted === null || hlcCompare(hlc, o.deleted.hlc) > 0)) o.deleted = { tag: "restore", hlc };
+        const hlc: HLC = {
+          wall: op.wall,
+          logical: op.logical,
+          actor: op.actor,
+        };
+        if (o && (o.deleted === null || hlcCompare(hlc, o.deleted.hlc) > 0))
+          o.deleted = { tag: "restore", hlc };
         break;
       }
       case "putProp": {
@@ -146,15 +163,24 @@ export class Doc {
       }
       case "removeProp": {
         const o = this.objects.get(s.objId);
-        if (o) o.props.set(s.key, registerFor(o.props.get(s.key), { kind: "removed" }, op));
+        if (o)
+          o.props.set(
+            s.key,
+            registerFor(o.props.get(s.key), { kind: "removed" }, op),
+          );
         break;
       }
       case "zInsert": {
-        this.order.insert({ counter: zCounter(s.objId), actor: objActor(s.objId) }, s.parent, s.objId, {
-          wall: op.wall,
-          logical: op.logical,
-          actor: op.actor,
-        });
+        this.order.insert(
+          { counter: zCounter(s.objId), actor: objActor(s.objId) },
+          s.parent,
+          s.objId,
+          {
+            wall: op.wall,
+            logical: op.logical,
+            actor: op.actor,
+          },
+        );
         break;
       }
       case "zRemove": {
@@ -166,12 +192,22 @@ export class Doc {
       }
       case "textInsert": {
         const t = this.texts.get(s.objId);
-        if (t) t.insert(s.id, s.parent, s.ch, { wall: op.wall, logical: op.logical, actor: op.actor });
+        if (t)
+          t.insert(s.id, s.parent, s.ch, {
+            wall: op.wall,
+            logical: op.logical,
+            actor: op.actor,
+          });
         break;
       }
       case "textRemove": {
         const t = this.texts.get(s.objId);
-        if (t) t.delete(s.id, { wall: op.wall, logical: op.logical, actor: op.actor });
+        if (t)
+          t.delete(s.id, {
+            wall: op.wall,
+            logical: op.logical,
+            actor: op.actor,
+          });
         break;
       }
     }
@@ -211,7 +247,8 @@ export class Doc {
       const o = this.objects.get(objId);
       if (o === undefined || o.deleted?.tag === "delete") continue;
       const props: Record<string, Value> = {};
-      for (const [k, v] of o.props) if (v.value.kind !== "removed") props[k] = v.value;
+      for (const [k, v] of o.props)
+        if (v.value.kind !== "removed") props[k] = v.value;
       out.push({ id: o.id, type: o.type, props, deleted: false });
     }
     return out;
@@ -249,7 +286,8 @@ export class Doc {
       if (
         o.deleted?.tag === "delete" &&
         stable.has(o.deleted.hlc.actor) &&
-        (stable.get(o.deleted.hlc.actor) ?? 0) >= seqOfDeleted(this.opIndex.values(), id)
+        (stable.get(o.deleted.hlc.actor) ?? 0) >=
+          seqOfDeleted(this.opIndex.values(), id)
       ) {
         this.objects.delete(id);
       }
@@ -281,7 +319,8 @@ export class Doc {
     opCount: number;
   } {
     const texts: Record<string, string> = {};
-    for (const id of [...this.texts.keys()].sort()) texts[id] = this.texts.get(id)!.values().join("");
+    for (const id of [...this.texts.keys()].sort())
+      texts[id] = this.texts.get(id)!.values().join("");
     return {
       shapes: this.shapes().map((s) => ({
         ...s,
@@ -318,14 +357,24 @@ export class Doc {
         const prev = o?.props.get(spec.key);
         return prev === undefined || prev.value.kind === "removed"
           ? { t: "removeProp", objId: spec.objId, key: spec.key }
-          : { t: "putProp", objId: spec.objId, key: spec.key, value: prev.value };
+          : {
+              t: "putProp",
+              objId: spec.objId,
+              key: spec.key,
+              value: prev.value,
+            };
       }
       case "removeProp": {
         const o = this.objects.get(spec.objId);
         const prev = o?.props.get(spec.key);
         return prev === undefined || prev.value.kind === "removed"
           ? null
-          : { t: "putProp", objId: spec.objId, key: spec.key, value: prev.value };
+          : {
+              t: "putProp",
+              objId: spec.objId,
+              key: spec.key,
+              value: prev.value,
+            };
       }
       case "zInsert":
         return { t: "zRemove", objId: spec.objId };

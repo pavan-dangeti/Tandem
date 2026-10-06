@@ -26,10 +26,19 @@ export interface Ctx {
 }
 
 export function newCtx(): Ctx {
-  return { objects: [], objCounters: new Map(), textIds: new Map(), textCounter: 1 };
+  return {
+    objects: [],
+    objCounters: new Map(),
+    textIds: new Map(),
+    textCounter: 1,
+  };
 }
 
-export function interpret(action: Action, docs: Map<string, Doc>, ctx: Ctx): Op[] {
+export function interpret(
+  action: Action,
+  docs: Map<string, Doc>,
+  ctx: Ctx,
+): Op[] {
   const doc = docs.get(action.actor);
   if (!doc) return [];
   const objects = ctx.objects;
@@ -39,12 +48,22 @@ export function interpret(action: Action, docs: Map<string, Doc>, ctx: Ctx): Op[
       ctx.objCounters.set(action.actor, counter);
       const id = objId(action.actor, counter);
       objects.push(id);
-      return doc.applyLocal([{ t: "putObject", objId: id, type: action.type }, { t: "zInsert", objId: id, parent: null }]);
+      return doc.applyLocal([
+        { t: "putObject", objId: id, type: action.type },
+        { t: "zInsert", objId: id, parent: null },
+      ]);
     }
     case "putProp": {
       if (objects.length === 0) return [];
       const obj = objects[action.actor.length % objects.length]!;
-      return doc.applyLocal([{ t: "putProp", objId: obj, key: action.key, value: { kind: "int", v: action.v } }]);
+      return doc.applyLocal([
+        {
+          t: "putProp",
+          objId: obj,
+          key: action.key,
+          value: { kind: "int", v: action.v },
+        },
+      ]);
     }
     case "removeProp": {
       if (objects.length === 0) return [];
@@ -66,7 +85,9 @@ export function interpret(action: Action, docs: Map<string, Doc>, ctx: Ctx): Op[
       ctx.textIds.set(obj, [...(ctx.textIds.get(obj) ?? []), id]);
       const parents = ctx.textIds.get(obj) ?? [];
       const parent = parents.length > 1 ? parents[parents.length - 2]! : null;
-      return doc.applyLocal([{ t: "textInsert", objId: obj, id, parent, ch: action.ch }]);
+      return doc.applyLocal([
+        { t: "textInsert", objId: obj, id, parent, ch: action.ch },
+      ]);
     }
     case "textRemove": {
       if (objects.length === 0) return [];
