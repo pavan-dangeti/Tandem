@@ -1,0 +1,55 @@
+{
+  "date": "2026-10-06T20:26:39.916Z",
+  "hardware": "Apple M5 x10, 16GB RAM, node v22.23.2",
+  "text": {
+    "editsCount": 259778,
+    "tandem": {
+      "authorMs": 7577.2970829999995,
+      "mergeMs": 332.2770410000003,
+      "memAfterMB": 241,
+      "bytes": 8673080,
+      "ops": 259780,
+      "finalLength": 104852
+    },
+    "yjs": {
+      "authorMs": 1050.4629159999986,
+      "mergeMs": 27.797833000000537,
+      "memAfterMB": 17,
+      "bytes": 311038,
+      "ops": 259778,
+      "finalLength": 104852
+    },
+    "automerge": {
+      "authorMs": 13464.329709000001,
+      "mergeMs": 2630.963125000002,
+      "memAfterMB": -29,
+      "bytes": 129198,
+      "ops": 259778,
+      "finalLength": 104852
+    }
+  },
+  "whiteboard": {
+    "opsCount": 100000,
+    "tandem": {
+      "authorMs": 307.301958,
+      "mergeMs": 161.39066699999967,
+      "memAfterMB": 15,
+      "bytes": 3546305,
+      "ops": 112586
+    },
+    "yjs": {
+      "authorMs": 217.52799999999843,
+      "mergeMs": 94.10791699999754,
+      "memAfterMB": 2,
+      "bytes": 761161,
+      "ops": 100000
+    },
+    "automerge": {
+      "authorMs": 125070.201084,
+      "mergeMs": 333.5232079999987,
+      "memAfterMB": -622,
+      "bytes": 773708,
+      "ops": 100000
+    }
+  }
+}

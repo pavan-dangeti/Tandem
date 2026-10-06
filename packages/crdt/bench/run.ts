@@ -16,8 +16,9 @@ interface OpStream {
 
 function loadTrace(): OpStream {
   const src = fs.readFileSync(new URL("./editing-trace.js", import.meta.url), "utf8");
-  const fn = new Function(`${src}\nreturn { edits, finalText };`);
-  return fn() as OpStream;
+  const moduleShim = { exports: {} as OpStream };
+  new Function("module", "exports", src)(moduleShim, moduleShim);
+  return moduleShim.exports;
 }
 
 function memoryMB(): number {
@@ -29,7 +30,7 @@ function now(): number {
 }
 
 async function benchText(): Promise<Record<string, unknown>> {
-  const { edits, finalText } = loadTrace();
+  const { edits: allEdits, finalText } = loadTrace(); const edits = allEdits.slice(0, Number(process.env.WOB_TRACE ?? allEdits.length)); const fullText = edits.length === allEdits.length ? finalText : undefined;
   // tandem CRDT
   {
     const doc = new Doc("u1");
@@ -39,7 +40,8 @@ async function benchText(): Promise<Record<string, unknown>> {
     let textCounter = 1;
     const m0 = memoryMB();
     const t0 = now();
-    for (const [index, delCount, inserted] of edits) {
+    for (const [index, delCount, insertedRaw] of edits) {
+      const inserted = insertedRaw ?? "";
       for (let d = 0; d < delCount; d++) {
         const p = positions[index]!;
         ops.push(...doc.applyLocal([{ t: "textRemove", objId: "u1:1", id: p.id }]));
@@ -55,8 +57,8 @@ async function benchText(): Promise<Record<string, unknown>> {
     }
     const tandemAuthor = now() - t0;
     const m1 = memoryMB();
-    const final = doc.text("u1:1");
-    if (final !== finalText) throw new Error(`tandem final mismatch: ${final.length} vs ${finalText.length}`);
+    console.log("tandem author done ms", now() - t0); const final = doc.text("u1:1");
+    if (fullText !== undefined && final !== fullText) throw new Error(`tandem final mismatch: ${final.length} vs ${fullText.length}`);
     const bytes = ops.reduce((n, o) => n + encodeOp(o).length, 0);
     const doc2 = new Doc("u2");
     const mt0 = now();
@@ -73,42 +75,41 @@ async function benchText(): Promise<Record<string, unknown>> {
     const t0 = now();
     for (const [index, delCount, inserted] of edits) {
       if (delCount > 0) t.delete(index, delCount);
-      if (inserted.length > 0) t.insert(index, inserted);
+      const ins0 = inserted ?? ""; if (ins0.length > 0) t.insert(index, ins0);
     }
-    const author = now() - t0;
+    const author = now() - t0; console.log("stage done ms", author);
     const m1 = memoryMB();
-    if (t.toString() !== finalText) throw new Error("yjs final mismatch");
+    if (fullText !== undefined && t.toString() !== fullText) throw new Error("yjs final mismatch");
     const bytes = Y.encodeStateAsUpdate(doc).byteLength;
     const doc2 = new Y.Doc();
     const mt0 = now();
     Y.applyUpdate(doc2, Y.encodeStateAsUpdate(doc));
     const merge = now() - mt0;
-    lastText["yjs"] = { authorMs: author, mergeMs: merge, memAfterMB: m1 - m0, bytes, ops: edits.length, finalLength: finalText.length };
+    lastText["yjs"] = { authorMs: author, mergeMs: merge, memAfterMB: m1 - m0, bytes, ops: edits.length, finalLength: fullText?.length ?? 0 };
   }
   // Automerge
   {
-    let doc = A.init<{ text: A.Text }>();
+    let doc = A.init<{ text: string }>();
     doc = A.change(doc, (d) => {
-      d.text = new A.Text();
+      d.text = "";
     });
     const m0 = memoryMB();
     const t0 = now();
     for (const [index, delCount, inserted] of edits) {
+      const ins = inserted ?? "";
       doc = A.change(doc, (d) => {
-        if (delCount > 0) d.text.deleteAt(index, delCount);
-        if (inserted.length > 0) d.text.insertAt(index, ...inserted.split(""));
+        if (delCount > 0) A.splice(d, ["text"], index, delCount);
+        if (ins.length > 0) A.splice(d, ["text"], index, 0, ins);
       });
     }
-    const author = now() - t0;
+    const author = now() - t0; console.log("stage done ms", author);
     const m1 = memoryMB();
-    const finalStr = [...doc.text].join("");
-    if (finalStr !== finalText) throw new Error("automerge final mismatch");
+    if (fullText !== undefined && doc.text !== fullText) throw new Error("automerge final mismatch");
     const bytes = A.save(doc).byteLength;
-    const doc2 = A.init<{ text: A.Text }>();
     const mt0 = now();
-    const applied = A.applyChanges(doc2, A.getChanges(doc));
+    A.load<typeof doc>(A.save(doc)); /* merge proxy */
     const merge = now() - mt0;
-    lastText["automerge"] = { authorMs: author, mergeMs: merge, memAfterMB: m1 - m0, bytes, ops: edits.length, finalLength: finalText.length };
+    lastText["automerge"] = { authorMs: author, mergeMs: merge, memAfterMB: m1 - m0, bytes, ops: edits.length, finalLength: fullText?.length ?? 0 };
   }
   const editsCount = edits.length;
   return { editsCount, ...lastText };
@@ -153,7 +154,7 @@ async function benchWhiteboard(): Promise<Record<string, unknown>> {
       else if (s.kind === "move") ops.push(...doc.applyLocal([{ t: "putProp", objId: s.objId!, key: "x", value: { kind: "double", v: s.value! } }]));
       else ops.push(...doc.applyLocal([{ t: "deleteObject", objId: s.objId! }]));
     }
-    const author = now() - t0;
+    const author = now() - t0; console.log("stage done ms", author);
     const m1 = memoryMB();
     const bytes = ops.reduce((n, o) => n + encodeOp(o).length, 0);
     const doc2 = new Doc("u2");
@@ -174,7 +175,7 @@ async function benchWhiteboard(): Promise<Record<string, unknown>> {
       else if (s.kind === "move") { const cur = objs.get(s.objId!) as object | undefined; if (cur) objs.set(s.objId!, { ...cur, x: s.value! }); }
       else { objs.delete(s.objId!); }
     }
-    const author = now() - t0;
+    const author = now() - t0; console.log("stage done ms", author);
     const m1 = memoryMB();
     const bytes = Y.encodeStateAsUpdate(doc).byteLength;
     const doc2 = new Y.Doc();
@@ -186,6 +187,9 @@ async function benchWhiteboard(): Promise<Record<string, unknown>> {
   // Automerge
   {
     let doc = A.init<{ objects: Record<string, { type: string; x: number }> }>();
+    doc = A.change(doc, (d) => {
+      d.objects = {};
+    });
     let n = 0;
     const m0 = memoryMB();
     const t0 = now();
@@ -196,12 +200,11 @@ async function benchWhiteboard(): Promise<Record<string, unknown>> {
         else delete d.objects[s.objId!];
       });
     }
-    const author = now() - t0;
+    const author = now() - t0; console.log("stage done ms", author);
     const m1 = memoryMB();
     const bytes = A.save(doc).byteLength;
-    const doc2 = A.init<{ objects: Record<string, { type: string; x: number }> }>();
     const mt0 = now();
-    A.applyChanges(doc2, A.getChanges(doc));
+    A.load<typeof doc>(A.save(doc)); /* merge proxy */
     const merge = now() - mt0;
     lastWob["automerge"] = { authorMs: author, mergeMs: merge, memAfterMB: m1 - m0, bytes, ops: stream.length };
   }

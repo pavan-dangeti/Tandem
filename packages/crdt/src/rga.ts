@@ -32,6 +32,11 @@ export class RGA<V> {
   >();
   private pendingDeletes = new Map<string, HLC[]>();
 
+  getValue(id: RGAId): V | undefined {
+    const n = this.nodes.get(rgaIdKey(id));
+    return n?.value;
+  }
+
   parentOf(id: RGAId): RGAId | null {
     const n = this.nodes.get(rgaIdKey(id));
     if (n === undefined || n.parent === null) return null;
@@ -82,10 +87,16 @@ export class RGA<V> {
       }
     }
     const siblings = this.children.get(parentKey) ?? [];
-    siblings.push(key);
-    siblings.sort((a, b) =>
-      rgaCompare(this.nodes.get(b)!.id, this.nodes.get(a)!.id),
-    );
+    const kId = this.nodes.get(key)!.id;
+    let lo = 0;
+    let hi = siblings.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const sId = this.nodes.get(siblings[mid]!)!.id;
+      if (rgaCompare(sId, kId) > 0) lo = mid + 1;
+      else hi = mid;
+    }
+    siblings.splice(lo, 0, key);
     this.children.set(parentKey, siblings);
     const waiting = this.pending.get(key);
     if (waiting !== undefined) {
@@ -124,28 +135,28 @@ export class RGA<V> {
 
   values(): V[] {
     const out: V[] = [];
-    const walk = (parentKey: string | null): void => {
-      for (const key of this.children.get(parentKey) ?? []) {
-        const n = this.nodes.get(key)!;
-        if (!n.deleted) out.push(n.value);
-        walk(key);
-      }
-    };
-    walk(null);
+    const stack = [...(this.children.get(null) ?? [])].reverse();
+    while (stack.length > 0) {
+      const key = stack.pop()!;
+      const n = this.nodes.get(key)!;
+      if (!n.deleted) out.push(n.value);
+      const kids = this.children.get(key) ?? [];
+      for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]!);
+    }
     return out;
   }
 
   materialize(): { ids: string[]; deleted: string[] } {
     const ids: string[] = [];
     const deleted: string[] = [];
-    const walk = (parentKey: string | null): void => {
-      for (const key of this.children.get(parentKey) ?? []) {
-        const n = this.nodes.get(key)!;
-        ids.push(`${n.deleted ? "!" : ""}${rgaIdKey(n.id)}`);
-        walk(key);
-      }
-    };
-    walk(null);
+    const stack = [...(this.children.get(null) ?? [])].reverse();
+    while (stack.length > 0) {
+      const key = stack.pop()!;
+      const n = this.nodes.get(key)!;
+      ids.push(`${n.deleted ? "!" : ""}${rgaIdKey(n.id)}`);
+      const kids = this.children.get(key) ?? [];
+      for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]!);
+    }
     for (const n of this.nodes.values())
       if (n.deleted) deleted.push(rgaIdKey(n.id));
     return { ids, deleted };

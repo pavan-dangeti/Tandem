@@ -335,20 +335,15 @@ export class Doc {
         return { t: "textRemove", objId: spec.objId, id: spec.id };
       case "textRemove": {
         const t = this.texts.get(spec.objId);
-        const node = t
-          ?.entries()
-          .find(
-            (e) =>
-              e.id.actor === spec.id.actor && e.id.counter === spec.id.counter,
-          );
-        return node === undefined
+        const nodeValue = t?.getValue(spec.id);
+        return nodeValue === undefined
           ? null
           : {
               t: "textInsert",
               objId: spec.objId,
               id: spec.id,
               parent: this.textParentOf(spec.objId, spec.id),
-              ch: node.value,
+              ch: nodeValue,
             };
       }
       default:
