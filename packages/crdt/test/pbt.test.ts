@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "vitest";
 import fc from "fast-check";
 import { Doc } from "../src/index.js";
 import type { Op } from "../src/index.js";
@@ -231,7 +231,7 @@ describe("PBT convergence", () => {
       fc.property(
         fc.array(actionArb, { minLength: 1, maxLength: 50 }),
         (actions) => {
-          const { allOps, ctx } = runScript(actions);
+          const { allOps } = runScript(actions);
           const d = new Doc("x");
           d.merge(allOps);
           const before = stripped(d);

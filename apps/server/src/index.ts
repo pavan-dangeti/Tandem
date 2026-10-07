@@ -1,17 +1,15 @@
-import { createServer } from "node:http";
+import { startServer } from "./server.js";
 
-const port = Number(process.env.PORT ?? 8080);
-
-const server = createServer((req, res) => {
-  if (req.url === "/healthz") {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true }));
-    return;
-  }
-  res.writeHead(404, { "content-type": "application/json" });
-  res.end(JSON.stringify({ error: "not_found" }));
-});
-
-server.listen(port, () => {
-  console.log(JSON.stringify({ msg: "listening", port }));
-});
+startServer()
+  .then((s) => {
+    console.log(JSON.stringify({ msg: "listening", port: s.port }));
+    const shutdown = (): void => {
+      void s.close().then(() => process.exit(0));
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+  })
+  .catch((err) => {
+    console.error(JSON.stringify({ msg: "fatal", err: String(err) }));
+    process.exit(1);
+  });
