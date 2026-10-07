@@ -2,6 +2,7 @@ import { Doc, decodeOp, encodeOp, type Op, type OpSpec } from "@tandem/crdt";
 import {
   FRAME,
   MAX_FRAME,
+  type Ack,
   PROTOCOL_VERSION,
   buildFrame,
   packOps,
@@ -31,6 +32,9 @@ export interface SyncClientOptions {
 const te = new TextEncoder();
 const td = new TextDecoder();
 const BATCH_SIZE = 500;
+// The server rejects batches beyond its in-flight cap, so we only keep this many
+// batches unacknowledged and let the Acks drive the rest.
+const MAX_INFLIGHT = 4;
 
 /**
  * Local-first sync client: every edit hits the local CRDT and the durable op log
@@ -43,6 +47,9 @@ export class SyncClient {
   private queue: Op[] = [];
   private retry = 0;
   private closed = false;
+  private inFlight = 0;
+  /** highest op seq of our own ops the server has acknowledged as durable */
+  private ackedSeq = 0;
   private oplog: OpLog;
   private socketFactory: (url: string) => WebSocket;
   private url: string;
@@ -151,6 +158,7 @@ export class SyncClient {
         const { stateVector, ops } = unpackSyncResponse(frame.payload);
         for (const raw of ops) this.applyIncoming(raw);
         this.setStatus("open");
+        this.inFlight = 0;
         // The server tells us how far it has got with our ops; anything beyond
         // that was never persisted (offline edits, crash before ack) and resends.
         const serverHas = stateVector[this.opts.userId] ?? 0;
@@ -168,6 +176,17 @@ export class SyncClient {
       case FRAME.OP_BATCH: {
         for (const raw of unpackOps(frame.payload)) this.applyIncoming(raw);
         this.onChange?.();
+        break;
+      }
+      case FRAME.ACK: {
+        const ack = JSON.parse(td.decode(frame.payload)) as Ack;
+        this.inFlight = Math.max(0, this.inFlight - 1);
+        // the ack carries the server's state vector, so we know exactly which of
+        // our ops are durable (not merely sent)
+        const mine = ack.stateVector[this.opts.userId] ?? 0;
+        if (mine > this.ackedSeq) this.ackedSeq = mine;
+        // an ack frees a slot; drain whatever queued while we were capped
+        this.flush([]);
         break;
       }
       case FRAME.PRESENCE: {
@@ -217,15 +236,22 @@ export class SyncClient {
   }
 
   private flush(ops: Op[]): void {
-    if (ops.length === 0) return;
-    this.queue.push(...ops);
-    if (this.status !== "open") return;
-    const batch = this.queue.splice(0, this.queue.length);
-    for (let i = 0; i < batch.length; i += BATCH_SIZE) {
-      const chunk = batch.slice(i, i + BATCH_SIZE);
-      const bytes = packOps(chunk.map((op) => encodeOp(op)));
-      if (bytes.length <= MAX_FRAME)
-        this.send(buildFrame(FRAME.OP_BATCH, bytes));
+    if (ops.length > 0) this.queue.push(...ops);
+    if (this.status !== "open" || this.inFlight >= MAX_INFLIGHT) return;
+    while (this.queue.length > 0 && this.inFlight < MAX_INFLIGHT) {
+      const batch = this.queue.splice(
+        0,
+        Math.min(BATCH_SIZE, this.queue.length),
+      );
+      const bytes = packOps(batch.map((op) => encodeOp(op)));
+      if (bytes.length > MAX_FRAME) {
+        // too large for one frame: put it back and let the server's rate limit
+        // push back on us rather than silently dropping work
+        this.queue.unshift(...batch);
+        break;
+      }
+      this.send(buildFrame(FRAME.OP_BATCH, bytes));
+      this.inFlight++;
     }
   }
 
@@ -241,9 +267,16 @@ export class SyncClient {
     this.send(buildFrame(FRAME.PRESENCE, te.encode(JSON.stringify(msg))));
   }
 
-  /** True when there are edits that have not reached the server yet. */
+  /** True when there are edits that have not been handed to the server yet. */
   get hasUnsentOps(): boolean {
     return this.queue.length > 0;
+  }
+
+  /** True when the server has not yet acknowledged our latest op as durable. */
+  get hasUnackedOps(): boolean {
+    return (
+      (this.opts.doc.stateVector().get(this.opts.userId) ?? 0) > this.ackedSeq
+    );
   }
 
   close(): void {

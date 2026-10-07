@@ -44,5 +44,17 @@ services:
       redis:
         condition: service_healthy
 
+  # Chaos testing: put a controllable network between clients and the server.
+  #   docker compose --profile chaos up -d
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    profiles: ["chaos"]
+    command: ["-host", "0.0.0.0", "-config", "/etc/toxiproxy/proxy.json"]
+    volumes:
+      - ./apps/server/chaos/proxy.json:/etc/toxiproxy/proxy.json:ro
+    ports:
+      - "8474:8474"
+      - "8666:8666"
+
 volumes:
   pgdata:

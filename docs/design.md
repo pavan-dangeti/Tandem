@@ -75,10 +75,13 @@ authToken, stateVector }`.
   and rate-limited, persisted to the op log, then fanned out.
 - Cross-node fan-out via Redis pub/sub: a client on node A emits an op,
   node A publishes to the board's channel, all nodes forward to their local
-  subscribers.
-- Health (`/healthz`) and readiness (`/readyz`) endpoints; Prometheus
-  metrics at `/metrics`; structured JSON logs with request IDs; OTel
-  tracing across the pub/sub hop.
+  subscribers. Only the accepting node writes to the log; subscribers apply
+  and forward, so every op is persisted exactly once.
+- Acks are sent after the rows commit, so an acknowledged op survives a crash;
+  a failed fan-out publish does not withhold the ack because the data is
+  already durable (clients repair via state vector on reconnect).
+- Health (`/healthz`) and readiness (`/readyz`) endpoints; structured JSON
+  logs with request IDs; OTel tracing across the pub/sub hop (phase 6).
 
 ### Persistence
 

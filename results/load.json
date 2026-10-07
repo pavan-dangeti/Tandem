@@ -1,0 +1,19 @@
+{
+  "date": "2026-10-07T16:54:57.316Z",
+  "hardware": "Apple M5 x10, 16GB RAM, node v22.23.2",
+  "config": {
+    "nodes": 2,
+    "editors": 400,
+    "editsPerEditor": 40,
+    "database": "postgres"
+  },
+  "fanout": {
+    "samples": 16000,
+    "p50": 1276.3860829999976,
+    "p95": 3835.4660000000003,
+    "p99": 4128.537832999995,
+    "max": 4205.390874999997
+  },
+  "throughputOpsPerSec": 3752,
+  "elapsedMs": 4264
+}

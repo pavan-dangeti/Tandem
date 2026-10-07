@@ -1,0 +1,121 @@
+{
+  "date": "2026-10-07T16:56:53.796Z",
+  "hardware": "Apple M5 x10, 16GB RAM, node v22.23.2",
+  "sloNote": "target: p95 < 300ms for 50 editors on one board",
+  "points": [
+    {
+      "date": "2026-10-07T16:55:35.341Z",
+      "hardware": "Apple M5 x10, 16GB RAM, node v22.23.2",
+      "config": {
+        "nodes": 2,
+        "editors": 20,
+        "editsPerEditor": 40,
+        "database": "postgres"
+      },
+      "fanout": {
+        "samples": 800,
+        "p50": 9.472625000000335,
+        "p95": 11.765083000000232,
+        "p99": 12.009291999999732,
+        "max": 12.033499999999549
+      },
+      "throughputOpsPerSec": 51561,
+      "elapsedMs": 16
+    },
+    {
+      "date": "2026-10-07T16:55:43.397Z",
+      "hardware": "Apple M5 x10, 16GB RAM, node v22.23.2",
+      "config": {
+        "nodes": 2,
+        "editors": 50,
+        "editsPerEditor": 40,
+        "database": "postgres"
+      },
+      "fanout": {
+        "samples": 2000,
+        "p50": 31.066249999999854,
+        "p95": 47.014375000000655,
+        "p99": 49.30766699999913,
+        "max": 49.94524999999885
+      },
+      "throughputOpsPerSec": 32033,
+      "elapsedMs": 62
+    },
+    {
+      "date": "2026-10-07T16:55:56.396Z",
+      "hardware": "Apple M5 x10, 16GB RAM, node v22.23.2",
+      "config": {
+        "nodes": 2,
+        "editors": 100,
+        "editsPerEditor": 40,
+        "database": "postgres"
+      },
+      "fanout": {
+        "samples": 4000,
+        "p50": 54.42962500000067,
+        "p95": 129.94166699999914,
+        "p99": 139.30387500000143,
+        "max": 141.43095800000083
+      },
+      "throughputOpsPerSec": 27384,
+      "elapsedMs": 146
+    },
+    {
+      "date": "2026-10-07T16:56:08.623Z",
+      "hardware": "Apple M5 x10, 16GB RAM, node v22.23.2",
+      "config": {
+        "nodes": 2,
+        "editors": 150,
+        "editsPerEditor": 40,
+        "database": "postgres"
+      },
+      "fanout": {
+        "samples": 6000,
+        "p50": 81.73254199999792,
+        "p95": 185.8312500000029,
+        "p99": 198.61799999999494,
+        "max": 201.8917500000025
+      },
+      "throughputOpsPerSec": 27345,
+      "elapsedMs": 219
+    },
+    {
+      "date": "2026-10-07T16:56:28.349Z",
+      "hardware": "Apple M5 x10, 16GB RAM, node v22.23.2",
+      "config": {
+        "nodes": 2,
+        "editors": 200,
+        "editsPerEditor": 40,
+        "database": "postgres"
+      },
+      "fanout": {
+        "samples": 8000,
+        "p50": 198.67420799999672,
+        "p95": 571.049583,
+        "p99": 617.8286250000019,
+        "max": 628.8862500000032
+      },
+      "throughputOpsPerSec": 12234,
+      "elapsedMs": 654
+    },
+    {
+      "date": "2026-10-07T16:56:53.281Z",
+      "hardware": "Apple M5 x10, 16GB RAM, node v22.23.2",
+      "config": {
+        "nodes": 2,
+        "editors": 300,
+        "editsPerEditor": 40,
+        "database": "postgres"
+      },
+      "fanout": {
+        "samples": 12000,
+        "p50": 267.2515839999978,
+        "p95": 938.3577079999959,
+        "p99": 1038.7261670000007,
+        "max": 1064.4347090000083
+      },
+      "throughputOpsPerSec": 11034,
+      "elapsedMs": 1088
+    }
+  ]
+}
