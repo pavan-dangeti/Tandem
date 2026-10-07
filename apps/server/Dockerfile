@@ -10,6 +10,8 @@ RUN pnpm --filter @tandem/server build
 FROM node:22-alpine
 WORKDIR /app
 RUN corepack enable
+ENV NODE_ENV=production
 COPY --from=build /app ./
+USER node
 EXPOSE 8080
 CMD ["node", "apps/server/dist/index.js"]

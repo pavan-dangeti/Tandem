@@ -12,10 +12,18 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@tandem/crdt": "workspace:*"
+    "@tandem/crdt": "workspace:*",
+    "bcryptjs": "^3.0.3",
+    "jose": "^6.2.12",
+    "pg": "^8.23.1",
+    "ws": "^8.22.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^3.0.0",
     "@types/node": "^24.19.1",
+    "@types/pg": "^8.23.1",
+    "@types/ws": "^8.18.2",
     "tsx": "^4.23.15"
   }
 }

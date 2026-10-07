@@ -312,7 +312,7 @@ async function benchWhiteboard(): Promise<Record<string, unknown>> {
         else if (s.kind === "move") {
           const o = d.objects[s.objId!];
           if (o) o.x = s.value!;
-        } else delete d.objects[s.objId!];
+        } else Reflect.deleteProperty(d.objects, s.objId!);
       });
     }
     const author = now() - t0;
