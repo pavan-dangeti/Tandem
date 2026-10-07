@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@tandem/crdt": "workspace:*",
+    "@tandem/protocol": "workspace:*",
     "bcryptjs": "^3.0.3",
     "jose": "^6.2.12",
     "pg": "^8.23.1",

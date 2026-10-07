@@ -101,6 +101,12 @@ authToken, stateVector }`.
 - Edits apply to the local CRDT instantly, persist to IndexedDB, and sync in
   the background; reconnect resumes with the state vector.
 
+### Sync protocol (`packages/protocol`, shared by server and client)
+
+- Framing (`[u8 type][u32be length][payload]`), op packing, and the zod
+  schemas for every message live in `packages/protocol` so the browser and the
+  server cannot drift. `docs/protocol.md` is the normative description.
+
 ### Auth and permissions
 
 - Email/password or OAuth (provider-agnostic interface; v1 ships email +
@@ -187,7 +193,8 @@ StateVector: Map<ActorId, number>
 
 ## Open questions for review
 
-1. RGA vs Fugue for the sequence CRDT (recommend Fugue — see ADR 0001).
+1. Sequence CRDT: decided — Fugue in ADR 0001, superseded by RGA in ADR 0003
+   after the integration walk proved too easy to get subtly wrong.
 2. Email/password vs magic-link auth for v1 (recommend email/password with
    bcrypt for simplicity).
 3. Oracle VM vs Render+Neon+Upstash hosting (recommend Oracle VM).

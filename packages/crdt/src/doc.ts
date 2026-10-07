@@ -40,7 +40,10 @@ export class Doc {
   private redoStacks = new Map<string, UndoEntry[]>();
   private pendingByObj = new Map<string, Op[]>();
 
-  constructor(private readonly actor: string) {
+  private readonly actor: string;
+
+  constructor(actor: string) {
+    this.actor = actor;
     this.clock = { wall: Date.now(), logical: 0, actor };
   }
 
