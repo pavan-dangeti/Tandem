@@ -24,6 +24,7 @@ import {
 } from "./auth.js";
 import { MemoryMetaStore, PostgresMetaStore, type MetaStore } from "./meta.js";
 import { MemoryOpStore, PostgresOpStore, type OpStore } from "./store.js";
+import { LocalBus, type Bus } from "./bus.js";
 import { z } from "zod";
 
 const te = new TextEncoder();
@@ -56,6 +57,9 @@ export interface ServerOptions {
   databaseUrl?: string;
   metaStore?: MetaStore;
   store?: OpStore;
+  /** cross-node fan-out; defaults to in-process fan-out for single-node runs */
+  bus?: Bus;
+  instanceId?: string;
 }
 
 export interface RunningServer {
@@ -73,11 +77,42 @@ export async function startServer(
   const store: OpStore =
     opts.store ??
     (databaseUrl ? new PostgresOpStore(databaseUrl) : new MemoryOpStore());
+  const bus: Bus = opts.bus ?? new LocalBus();
   await meta.init();
   await store.init();
 
   const sessions = new Map<string, Session>();
   const rooms = new Map<string, Set<Ctx>>();
+
+  function broadcastOps(
+    boardId: string,
+    encoded: Uint8Array[],
+    except: Ctx | null,
+  ): void {
+    if (encoded.length === 0) return;
+    const frame = buildFrame(FRAME.OP_BATCH, packOps(encoded));
+    for (const c of getRoom(boardId)) {
+      if (c !== except) c.ws.send(frame);
+    }
+  }
+
+  // Ops persisted by another node: apply to the local session and forward to the
+  // local room. The publishing node already did both, and persistence there is
+  // the source of truth, so subscribers never write to the log.
+  await bus.subscribe((msg) => {
+    if (msg.origin === bus.id) return;
+    void (async () => {
+      const session = await getSession(msg.boardId);
+      for (const raw of msg.ops) {
+        try {
+          session.doc.applyRemote(decodeOp(raw));
+        } catch {
+          // a malformed fan-out message must not take the node down
+        }
+      }
+      broadcastOps(msg.boardId, msg.ops, null);
+    })();
+  });
 
   async function getSession(boardId: string): Promise<Session> {
     let s = sessions.get(boardId);
@@ -468,28 +503,36 @@ export async function startServer(
           if (session.doc.applyRemote(op)) applied.push(op);
         }
         if (applied.length > 0) {
+          const encoded = applied.map((op) => encodeOp(op));
+          // Durable first, then fan out: an ack means the op survived a crash.
           await store.appendOps(
             boardId,
-            applied.map((op) => ({
+            applied.map((op, i) => ({
               actor: op.actor,
               seq: op.seq,
               wall: op.wall,
               logical: op.logical,
-              data: encodeOp(op),
+              data: encoded[i]!,
             })),
           );
           session.opsSinceSnapshot += applied.length;
           if (session.opsSinceSnapshot >= SNAPSHOT_EVERY) {
             await snapshotSession(session, boardId);
           }
-          // broadcast to others in room
-          const broadcast = buildFrame(
-            FRAME.OP_BATCH,
-            packOps(applied.map((o) => encodeOp(o))),
-          );
-          for (const c of getRoom(boardId)) {
-            if (c !== ctx) c.ws.send(broadcast);
-          }
+          broadcastOps(boardId, encoded, ctx);
+          // The rows are durable at this point, so a fan-out failure must not
+          // withhold the ack: clients reconnect and repair via state vector.
+          await bus
+            .publish({ origin: bus.id, boardId, ops: encoded })
+            .catch((err: unknown) => {
+              console.error(
+                JSON.stringify({
+                  msg: "fanout_publish_failed",
+                  boardId,
+                  err: String(err),
+                }),
+              );
+            });
         }
         // ack
         ctx.ws.send(
@@ -545,11 +588,13 @@ export async function startServer(
       const addr = server.address();
       resolve({
         port: typeof addr === "object" && addr ? addr.port : port,
-        close: () =>
-          new Promise((res) => {
-            getRoomSetForClose();
-            wss.close(() => server.close(() => res()));
-          }),
+        close: async () => {
+          getRoomSetForClose();
+          await bus.close();
+          await new Promise<void>((res) =>
+            wss.close(() => server.close(() => res())),
+          );
+        },
       });
     });
   });

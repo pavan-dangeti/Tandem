@@ -23,8 +23,11 @@ jobs:
       - run: pnpm build
       - run: docker compose config --quiet
       - run: docker compose up -d --wait postgres redis
+      # Postgres-backed persistence, Redis fan-out, and crash recovery
+      # (SIGKILL a real server process and prove no acked op is lost)
       - run: pnpm --filter @tandem/server test
         env:
           TEST_DATABASE_URL: postgres://tandem:tandem@localhost:5434/tandem
+          TEST_REDIS_URL: redis://localhost:6379
       - if: always()
         run: docker compose down -v

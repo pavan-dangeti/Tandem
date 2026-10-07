@@ -56,6 +56,21 @@ Ops use the compact binary `encodeOp` from `@tandem/crdt`. `packOps`/`unpackOps`
 - Within one connection batches are applied in order, and broadcasts preserve order; across the network, ops carry HLC and instance-level ids so reorder/duplication is safe.
 - Deletes and undo are represented as ops in the same log; `restoreObject` and HLC-max wins make undo deterministic.
 
+### Scaling and failure semantics
+
+- Nodes share nothing but Redis. The node that accepts a batch persists it,
+  broadcasts to its own room, and publishes to `tandem:board:<id>`; every other
+  node applies the ops to its local session and forwards them to its own room.
+  Subscribers never write to the op log, so exactly one node persists each op.
+- If a publish fails, the batch is still acked: the rows are already durable,
+  and clients repair the gap on reconnect through the state vector. Losing
+  fan-out costs latency, never data.
+- Acks are sent only after the rows commit, so an acknowledged op survives
+  `SIGKILL`; the crash test in `apps/server/test/crash.test.ts` proves this and
+  fails if the ordering is reversed.
+- Clients cap their own in-flight batches and drain the rest on ack, so a slow
+  server pushes back instead of losing work.
+
 ## Future work
 
 - Redis pub/sub fan-out across nodes, and a truly compact log once client vectors are negotiated (phase 5 introduces both).

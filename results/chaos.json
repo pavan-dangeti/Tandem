@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-07T17:03:05.592Z",
+  "scenario": "3 clients via toxiproxy, 25 edits during degraded phases",
+  "phases": [
+    {
+      "name": "healthy",
+      "detail": "no toxics",
+      "converged": true,
+      "lostOps": 0
+    },
+    {
+      "name": "latency",
+      "detail": "200ms added latency both directions",
+      "converged": true,
+      "lostOps": 0
+    },
+    {
+      "name": "bandwidth",
+      "detail": "10 kbit/s downstream",
+      "converged": true,
+      "lostOps": 0
+    },
+    {
+      "name": "partition",
+      "detail": "connection cut while clients keep editing",
+      "converged": true,
+      "lostOps": 0
+    }
+  ],
+  "allConverged": true
+}

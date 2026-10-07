@@ -1,0 +1,30 @@
+name: chaos
+
+# Chaos runs are slower and need toxiproxy, so they run on a schedule and on
+# demand rather than on every push.
+on:
+  schedule:
+    - cron: "37 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  chaos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: docker compose --profile chaos up -d --wait toxiproxy
+      # clients edit through the proxy while the link is degraded (latency,
+      # bandwidth, hard partition); the run fails if any replica diverges or
+      # any acknowledged op is lost after healing
+      - run: pnpm --filter @tandem/server chaos
+        env:
+          TOXIPROXY_URL: http://127.0.0.1:8474
+          PROXY_PORT: 8666
+      - if: always()
+        run: docker compose --profile chaos down -v
