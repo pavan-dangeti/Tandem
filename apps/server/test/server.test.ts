@@ -8,7 +8,7 @@ import {
   parseFrame,
   packOps,
   unpackOps,
-} from "../src/frame.js";
+} from "@tandem/protocol";
 import { MemoryMetaStore } from "../src/meta.js";
 import { MemoryOpStore } from "../src/store.js";
 

@@ -5,14 +5,14 @@ import { Doc, decodeOp, encodeOp } from "@tandem/crdt";
 import type { Op } from "@tandem/crdt";
 import {
   FRAME,
-  buildFrame,
-  parseFrame,
-  packOps,
-  unpackOps,
   MAX_FRAME,
-} from "./frame.js";
-
-import { helloSchema, presenceSchema, opSchema } from "./opschema.js";
+  buildFrame,
+  packOps,
+  packSyncResponse,
+  parseFrame,
+  unpackOps,
+} from "@tandem/protocol";
+import { helloSchema, opSchema, presenceSchema } from "@tandem/protocol";
 import {
   issueToken,
   verifyToken,
@@ -122,6 +122,21 @@ export async function startServer(
   const server = createServer((req, res) => {
     void (async () => {
       const url = new URL(req.url ?? "/", "http://localhost");
+      // The web client is served separately in development, so the API answers
+      // preflights. Credentials are bearer tokens held in page memory, never
+      // cookies, so a permissive origin is not a credential leak.
+      const cors = process.env.ALLOWED_ORIGINS ?? "*";
+      if (req.method === "OPTIONS") {
+        res.writeHead(204, {
+          "access-control-allow-origin": cors,
+          "access-control-allow-methods": "POST,GET,OPTIONS",
+          "access-control-allow-headers": "authorization,content-type",
+          "access-control-max-age": "600",
+        });
+        res.end();
+        return;
+      }
+      res.setHeader("access-control-allow-origin", cors);
       const json = (code: number, body: unknown): void => {
         res.writeHead(code, { "content-type": "application/json" });
         res.end(JSON.stringify(body));
@@ -330,7 +345,10 @@ export async function startServer(
             new Map(Object.entries(stateVector)),
           );
           const sv = Object.fromEntries(session.doc.stateVector());
-          const payload = packSyncResponse(sv, missing);
+          const payload = packSyncResponse(
+            sv,
+            missing.map((op) => encodeOp(op)),
+          );
           ws.send(buildFrame(FRAME.SYNC_RESPONSE, payload));
 
           ctx = {
@@ -365,6 +383,13 @@ export async function startServer(
             );
         }
       })().catch((err) => {
+        console.error(
+          JSON.stringify({
+            msg: "ws_handler_error",
+            err: String(err),
+            stack: err instanceof Error ? err.stack : undefined,
+          }),
+        );
         sendError(ws, "internal", String(err));
       });
     });
@@ -385,20 +410,6 @@ export async function startServer(
     let r = rooms.get(boardId);
     if (!r) rooms.set(boardId, (r = new Set()));
     return r;
-  }
-
-  function packSyncResponse(
-    stateVector: Record<string, number>,
-    missing: Op[],
-  ): Uint8Array {
-    const json = JSON.stringify({ stateVector });
-    const jb = te.encode(json);
-    const opsPayload = packOps(missing.map((o) => encodeOp(o)));
-    const out = new Uint8Array(4 + jb.length + opsPayload.length);
-    new DataView(out.buffer).setUint32(0, jb.length);
-    out.set(jb, 4);
-    out.set(opsPayload, 4 + jb.length);
-    return out;
   }
 
   function handleOpBatch(ctx: Ctx, boardId: string, payload: Uint8Array): void {

@@ -23,10 +23,25 @@ Raw results: `results/bench.json` (iteration over the trace is offline and deter
 
 Tandem loses to Yjs on text-authoring speed (7.6×) and encoded size (28×) — the tradeoff for owning the engine and LWW-register simplicity. Full README with architecture, limits, and security posture lands in Phase 6.
 
-## Development (phase 1 scaffold)
+## Run it locally
 
 ```sh
 pnpm install
-pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build
-docker compose up --build
+docker compose up -d postgres          # optional; the server falls back to in-memory stores
+pnpm --filter @tandem/server dev       # ws://localhost:8080
+pnpm --filter web dev                  # http://localhost:5173
 ```
+
+Create an account, open a board, and share it: `POST /boards/:id/share` returns a
+signed link (`?board=…&token=…`) that other people can open as editor or viewer.
+
+Checks:
+
+```sh
+pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build
+TEST_DATABASE_URL=postgres://tandem:tandem@localhost:5434/tandem pnpm --filter @tandem/server test
+```
+
+The web client is local-first: every edit lands in the CRDT and IndexedDB before
+it hits the network, and reconnecting replays whatever the server is missing
+(derived from its state vector), so nothing is lost while offline.

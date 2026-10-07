@@ -3,7 +3,7 @@ import { startServer, type RunningServer } from "../src/server.js";
 import { PostgresMetaStore } from "../src/meta.js";
 import { PostgresOpStore } from "../src/store.js";
 import { Doc, decodeOp, encodeOp } from "@tandem/crdt";
-import { FRAME, buildFrame, packOps } from "../src/frame.js";
+import { FRAME, buildFrame, packOps } from "@tandem/protocol";
 import WebSocket from "ws";
 
 const DATABASE_URL = process.env.TEST_DATABASE_URL;
