@@ -67,7 +67,7 @@ jobs:
         run: pnpm audit --audit-level high
       - name: build server image
         run: docker build -f apps/server/Dockerfile -t tandem-server:ci .
-      - uses: aquasecurity/trivy-action@0.28.0
+      - uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           image-ref: tandem-server:ci
           format: table
