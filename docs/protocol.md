@@ -8,7 +8,7 @@ WebSocket, binary frames: `[u8 type][u32be length][payload]`.
 
 | type | name         | direction             | payload                                                 |
 | ---- | ------------ | --------------------- | ------------------------------------------------------- |
-| 0    | Hello        | client → server       | JSON `{protocol, token, boardId, stateVector, actor?}`  |
+| 0    | Hello        | client → server       | JSON `{protocol, token, boardId, stateVector, device?}` |
 | 1    | SyncResponse | server → client       | `[u32be jsonLen][{"stateVector":...} JSON][packed ops]` |
 | 2    | OpBatch      | both                  | `[u32be count][(u32be len)(encodeOp bytes)]*`           |
 | 3    | Ack          | server → client       | JSON `{batchId, applied, stateVector}`                  |
@@ -22,7 +22,7 @@ Ops use the compact binary `encodeOp` from `@tandem/crdt`. `packOps`/`unpackOps`
 - `POST /auth/register {email,password}` → `{userId, token}` (HS256 JWT, 30d).
 - `POST /auth/login` → `{userId, token}`.
 - `POST /boards` (Bearer) → `{boardId}`. `POST /boards/:id/members {email, role}` (owner). `POST /boards/:id/share {role, ttlSeconds}` (owner) → HMAC-signed share token.
-- `Hello.token` is either the user JWT (member role from `board_members`) or a share token (role clamped: `editor` or `viewer`). A token for a user who is not a member is rejected. The optional `actor` (1–24 of `[a-z0-9]`, persisted per device by the client) makes the CRDT actor `<user or share-link actor>-<actor>`, so two devices on one account, or several people on one share link, never share an actor id and collide on `(actor, seq)`.
+- `Hello.token` is either the user JWT (member role from `board_members`) or a share token (role clamped: `editor` or `viewer`). A token for a user who is not a member is rejected. With `device` present (`""` on first use), each device gets its own CRDT actor `<user or share-link actor>-<suffix>`: the server mints the suffix and returns an HMAC-signed device token in the `SyncResponse`, which the client stores and presents on reconnect to keep the same actor. A device cannot claim another device's actor even though actor ids are visible to every peer, and two devices on one account or link never collide on `(actor, seq)`. Presence frames are re-stamped with the sender's actor by the server.
 
 ## Roles and invariants
 

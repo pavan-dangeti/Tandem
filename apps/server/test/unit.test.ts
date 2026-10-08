@@ -45,5 +45,6 @@ describe("production secrets", () => {
     });
     expect(r.status).not.toBe(0);
     expect(r.stderr).toContain("AUTH_SECRET");
-  });
+    // starting tsx in a subprocess can take seconds on a loaded CI runner
+  }, 20_000);
 });

@@ -18,16 +18,6 @@ interface BoardRef {
   token: string;
 }
 
-// One per browser, so two devices on one account or share link stay distinct actors.
-function deviceId(): string {
-  let id = localStorage.getItem("tandem.device");
-  if (!id) {
-    id = crypto.randomUUID().replaceAll("-", "").slice(0, 24);
-    localStorage.setItem("tandem.device", id);
-  }
-  return id;
-}
-
 function readJson(res: Response): Promise<Record<string, unknown>> {
   return res.json() as Promise<Record<string, unknown>>;
 }
@@ -117,19 +107,22 @@ export default function App(): React.JSX.Element {
   const client = useMemo(() => {
     if (!session || !board) return null;
     const doc = new Doc(session.userId);
+    const deviceKey = `tandem.device:${board.boardId}:${session.userId}`;
     return new SyncClient({
       doc,
       boardId: board.boardId,
       token: board.token,
       userId: session.userId,
-      deviceId: deviceId(),
+      // per board and identity: the server signs it for exactly that actor
+      device: localStorage.getItem(deviceKey) ?? "",
+      onDevice: (token) => localStorage.setItem(deviceKey, token),
       name: session.name,
       color: colorFor(session.userId),
       url: `${API.replace(/^http/, "ws")}/ws`,
     });
   }, [session, board]);
 
-  // Tabs of one browser share a device id, hence a CRDT actor; two of them
+  // Tabs of one browser share a device token, hence a CRDT actor; two of them
   // editing one board would collide on (actor, seq). Only the tab holding the
   // board's lock opens it; another waits and takes over when that tab closes.
   const [lockHeld, setLockHeld] = useState(false);

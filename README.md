@@ -203,9 +203,14 @@ pnpm --filter web exec playwright install chromium && pnpm --filter web e2e
 - Every operation is validated against a schema, size-limited (1 MiB frames
   rejected by the WebSocket layer before buffering) and rate-limited
   (400 ops/s per connection), and authorised on the server.
-- Passwords are bcrypt-hashed. Sessions are signed JWTs and share links are
-  HMAC-signed tokens with an expiry; the server refuses to start in
-  production without 32-character secrets.
+- Passwords are bcrypt-hashed and `/auth/*` is rate-limited per client
+  address; registration does not reveal whether an email exists. Sessions
+  are signed JWTs, share links are HMAC-signed tokens with an expiry, and each
+  device's CRDT actor is bound to a server-signed device token, so no client
+  can write as another device. The server refuses to start in production
+  without 32-character secrets.
+- HTTP bodies are capped at 64 KiB, presence is re-stamped with the sender's
+  identity, and metric labels come from a fixed route list.
 - The client renders all board text on a canvas, so content is never parsed
   as HTML. It ships a strict content security policy (no inline script or
   style); the API sends `default-src 'none'`.

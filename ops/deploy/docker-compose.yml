@@ -36,6 +36,8 @@ services:
       AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET}
       SHARE_SECRET: ${SHARE_SECRET:?set SHARE_SECRET}
       ALLOWED_ORIGINS: https://${DOMAIN:?set DOMAIN}
+      # Caddy is the only way in, so its X-Forwarded-For names the client
+      TRUST_PROXY: "1"
     depends_on:
       postgres:
         condition: service_healthy

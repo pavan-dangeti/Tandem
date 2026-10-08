@@ -21,8 +21,10 @@ export interface SyncClientOptions {
   boardId: string;
   token: string;
   userId: string;
-  /** per-device actor suffix; see helloSchema.actor */
-  deviceId?: string;
+  /** device token from an earlier session, or "" to be issued one */
+  device?: string;
+  /** persists a newly issued device token */
+  onDevice?: (token: string) => void;
   name: string;
   color: string;
   /** defaults to the page's own origin */
@@ -146,7 +148,7 @@ export class SyncClient {
               token: this.opts.token,
               boardId: this.opts.boardId,
               stateVector: Object.fromEntries(this.opts.doc.stateVector()),
-              actor: this.opts.deviceId,
+              device: this.opts.device,
             }),
           ),
         ),
@@ -193,7 +195,13 @@ export class SyncClient {
     if (!frame) return;
     switch (frame.type) {
       case FRAME.SYNC_RESPONSE: {
-        const { stateVector, ops, userId } = unpackSyncResponse(frame.payload);
+        const { stateVector, ops, userId, device } = unpackSyncResponse(
+          frame.payload,
+        );
+        if (device !== undefined && device !== this.opts.device) {
+          this.opts.device = device;
+          this.opts.onDevice?.(device);
+        }
         // a share-link guest is assigned its actor id by the server and ops are
         // signed as that id, so adopt it before anything else touches the doc
         if (userId && userId !== this.opts.userId) {

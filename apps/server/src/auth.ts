@@ -53,9 +53,8 @@ export function newUserId(): string {
 }
 
 // Share tokens are `<base64url payload>.<HMAC-SHA256>`. The payload's actor id
-// is the prefix for every guest on the link; the client's per-device suffix
-// (see helloSchema.actor) keeps a reconnecting guest on the same actor, so its
-// offline ops still converge, while two guests never share one.
+// is the prefix shared by every guest on the link; each device then gets its
+// own signed suffix (issueDeviceToken).
 export function issueShareToken(
   role: "editor" | "viewer",
   boardId: string,
@@ -99,4 +98,30 @@ export function verifyShareToken(
   )
     return null;
   return { role: payload.role, actorId: payload.actorId };
+}
+
+// Every device is its own CRDT actor, `<user or link actor>-<suffix>`, so two
+// devices never collide on (actor, seq). The suffix is minted and signed here:
+// a device keeps its actor across reconnects by presenting its token, but
+// cannot claim another device's, even though actor ids are visible to peers.
+function deviceSig(base: string, suffix: string): string {
+  return createHmac("sha256", SHARE_SECRET)
+    .update(`device|${base}|${suffix}`)
+    .digest("base64url");
+}
+
+export function issueDeviceToken(base: string): {
+  suffix: string;
+  token: string;
+} {
+  const suffix = randomBytes(9).toString("hex");
+  return { suffix, token: `${suffix}.${deviceSig(base, suffix)}` };
+}
+
+export function verifyDeviceToken(base: string, token: string): string | null {
+  const [suffix, sig] = token.split(".");
+  if (!suffix || !sig || !/^[0-9a-f]{18}$/.test(suffix)) return null;
+  const a = Buffer.from(sig);
+  const b = Buffer.from(deviceSig(base, suffix));
+  return a.length === b.length && timingSafeEqual(a, b) ? suffix : null;
 }

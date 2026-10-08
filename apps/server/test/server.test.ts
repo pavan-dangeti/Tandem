@@ -94,13 +94,14 @@ function wsConnect(
   boardId: string,
   token: string,
   stateVector: Record<string, number> = {},
-  actor?: string,
+  device?: string,
 ): Promise<{
   ws: WebSocket;
   sync: Promise<{
     sv: Record<string, number>;
     ops: Uint8Array[];
     userId: string;
+    device?: string;
   }>;
 }> {
   return new Promise((resolve, reject) => {
@@ -110,6 +111,7 @@ function wsConnect(
       sv: Record<string, number>;
       ops: Uint8Array[];
       userId: string;
+      device?: string;
     }>((res2, rej2) => {
       ws.on("message", (data: Buffer) => {
         const p = parseFrame(new Uint8Array(data));
@@ -127,13 +129,19 @@ function wsConnect(
             p.payload.byteLength,
           );
           const jsonLen = dv.getUint32(0);
-          const { stateVector: sv, userId } = JSON.parse(
-            td.decode(p.payload.subarray(4, 4 + jsonLen)),
-          ) as { stateVector: Record<string, number>; userId: string };
+          const {
+            stateVector: sv,
+            userId,
+            device: minted,
+          } = JSON.parse(td.decode(p.payload.subarray(4, 4 + jsonLen))) as {
+            stateVector: Record<string, number>;
+            userId: string;
+            device?: string;
+          };
           const ops: Uint8Array[] = [];
           if (p.payload.byteLength > 4 + jsonLen)
             ops.push(...unpackOps(p.payload.subarray(4 + jsonLen)));
-          res2({ sv, ops, userId });
+          res2({ sv, ops, userId, ...(minted ? { device: minted } : {}) });
         }
       });
       ws.on("open", () => {
@@ -146,7 +154,7 @@ function wsConnect(
                 token,
                 boardId,
                 stateVector,
-                actor,
+                device,
               }),
             ),
           ),
@@ -375,29 +383,129 @@ describe("sync protocol v1", () => {
   });
 });
 
-describe("share links", () => {
-  it("gives each device on the same link its own actor", async () => {
+describe("device actors", () => {
+  it("gives each device on a share link its own actor, kept across reconnects", async () => {
     const a = await register("share-actors@x.com");
     const boardId = await createBoard(a.token);
     const link = await getShare(a.token, boardId, "editor");
-    const g1 = await wsConnect(boardId, link, {}, "device1");
-    const g2 = await wsConnect(boardId, link, {}, "device2");
-    const again = await wsConnect(boardId, link, {}, "device1");
-    const [s1, s2, s3] = await Promise.all([g1.sync, g2.sync, again.sync]);
+    const g1 = await wsConnect(boardId, link, {}, "");
+    const g2 = await wsConnect(boardId, link, {}, "");
+    const [s1, s2] = await Promise.all([g1.sync, g2.sync]);
     expect(s1.userId).not.toBe(s2.userId);
-    expect(s3.userId).toBe(s1.userId);
+    const again = await wsConnect(boardId, link, {}, s1.device);
+    expect((await again.sync).userId).toBe(s1.userId);
     for (const c of [g1, g2, again]) c.ws.close();
+  });
+
+  it("does not let a device claim another device's actor", async () => {
+    const a = await register("device-forgery@x.com");
+    const boardId = await createBoard(a.token);
+    const link = await getShare(a.token, boardId, "editor");
+    const victim = await wsConnect(boardId, link, {}, "");
+    const v = await victim.sync;
+    const suffix = v.userId.slice(v.userId.lastIndexOf("-") + 1);
+    const forger = await wsConnect(boardId, link, {}, `${suffix}.forged`);
+    expect((await forger.sync).userId).not.toBe(v.userId);
+    for (const c of [victim, forger]) c.ws.close();
   });
 
   it("gives each device of one signed-in account its own actor", async () => {
     const a = await register("two-devices@x.com");
     const boardId = await createBoard(a.token);
-    const laptop = await wsConnect(boardId, a.token, {}, "laptop");
-    const phone = await wsConnect(boardId, a.token, {}, "phone");
+    const laptop = await wsConnect(boardId, a.token, {}, "");
+    const phone = await wsConnect(boardId, a.token, {}, "");
     const [s1, s2] = await Promise.all([laptop.sync, phone.sync]);
-    expect(s1.userId).toBe(`${a.userId}-laptop`);
-    expect(s2.userId).toBe(`${a.userId}-phone`);
+    expect(s1.userId.startsWith(`${a.userId}-`)).toBe(true);
+    expect(s2.userId.startsWith(`${a.userId}-`)).toBe(true);
+    expect(s1.userId).not.toBe(s2.userId);
     for (const c of [laptop, phone]) c.ws.close();
+  });
+});
+
+describe("presence", () => {
+  it("stamps the sender's identity instead of trusting the client", async () => {
+    const a = await register("presence-a@x.com");
+    const b = await register("presence-b@x.com");
+    const boardId = await createBoard(a.token);
+    await addMember(a.token, boardId, "presence-b@x.com", "editor");
+    const ca = await wsConnect(boardId, a.token);
+    const cb = await wsConnect(boardId, b.token);
+    await Promise.all([ca.sync, cb.sync]);
+    const got = nextFrame(cb.ws, FRAME.PRESENCE);
+    ca.ws.send(
+      buildFrame(
+        FRAME.PRESENCE,
+        te.encode(
+          JSON.stringify({
+            userId: b.userId,
+            name: "b",
+            color: "#000000",
+            at: Date.now(),
+          }),
+        ),
+      ),
+    );
+    const msg = JSON.parse(td.decode((await got).payload)) as {
+      userId: string;
+    };
+    expect(msg.userId).toBe(a.userId);
+    for (const c of [ca, cb]) c.ws.close();
+  });
+});
+
+describe("http hardening", () => {
+  const post = (path: string, body: string, headers = {}) =>
+    fetch(`http://127.0.0.1:${port}${path}`, {
+      method: "POST",
+      headers: { ...jsonHeaders, ...headers },
+      body,
+    });
+
+  it("does not reveal whether an email is registered", async () => {
+    await register("enumerate@x.com");
+    const again = await post(
+      "/auth/register",
+      JSON.stringify({ email: "enumerate@x.com", password: "password123" }),
+    );
+    const malformed = await post("/auth/register", "{}");
+    expect(again.status).toBe(malformed.status);
+    expect(await again.json()).toEqual(await malformed.json());
+  });
+
+  it("rejects request bodies over 64 KiB", async () => {
+    const res = await post("/auth/login", "x".repeat(65 * 1024));
+    expect(res.status).toBe(413);
+  });
+
+  it("labels unknown paths as one route in metrics", async () => {
+    await fetch(`http://127.0.0.1:${port}/no-such-path-${Date.now()}`);
+    const metrics = await (
+      await fetch(`http://127.0.0.1:${port}/metrics`)
+    ).text();
+    expect(metrics).toContain('route="other"');
+    expect(metrics).not.toContain("no-such-path");
+  });
+
+  it("rate-limits auth attempts per client address behind a proxy", async () => {
+    process.env.TRUST_PROXY = "1";
+    try {
+      const codes = [];
+      for (let i = 0; i < 25; i++)
+        codes.push(
+          (
+            await post("/auth/login", "{}", {
+              "x-forwarded-for": "203.0.113.9",
+            })
+          ).status,
+        );
+      expect(codes).toContain(429);
+      const other = await post("/auth/login", "{}", {
+        "x-forwarded-for": "203.0.113.10",
+      });
+      expect(other.status).not.toBe(429);
+    } finally {
+      delete process.env.TRUST_PROXY;
+    }
   });
 });
 

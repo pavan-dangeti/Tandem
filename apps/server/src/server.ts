@@ -24,6 +24,8 @@ import {
   checkPassword,
   newUserId,
   issueShareToken,
+  issueDeviceToken,
+  verifyDeviceToken,
 } from "./auth.js";
 import { MemoryMetaStore, PostgresMetaStore, type MetaStore } from "./meta.js";
 import { MemoryOpStore, PostgresOpStore, type OpStore } from "./store.js";
@@ -216,7 +218,7 @@ export async function startServer(
       res.setHeader("referrer-policy", "no-referrer");
       res.setHeader("cross-origin-resource-policy", "same-site");
       const json = (code: number, body: unknown): void => {
-        const route = url.pathname.replace(/[0-9a-f]{8,}/gi, ":id");
+        const route = routeOf(url.pathname);
         const ms = performance.now() - started;
         httpRequests.inc({ route, status: String(code) });
         httpDuration.observe({ route }, ms);
@@ -233,6 +235,8 @@ export async function startServer(
           }),
         );
       };
+      if (url.pathname.startsWith("/auth/") && !authAllowed(clientIp(req)))
+        return json(429, { error: "rate_limit" });
       const authed = async (): Promise<{ userId: string } | null> => {
         const auth = req.headers.authorization ?? "";
         const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
@@ -267,14 +271,13 @@ export async function startServer(
           })
           .safeParse(await readJson(req));
         if (!body.success) return json(400, { error: "invalid" });
+        // Hash before the lookup and answer a taken email like a malformed
+        // request, so neither the response nor its timing reveals accounts.
+        const hash = await hashPassword(body.data.password);
         if (await meta.getUserByEmail(body.data.email))
-          return json(409, { error: "exists" });
+          return json(400, { error: "invalid" });
         const userId = newUserId();
-        await meta.createUser(
-          userId,
-          body.data.email,
-          await hashPassword(body.data.password),
-        );
+        await meta.createUser(userId, body.data.email, hash);
         json(200, { userId, token: await issueToken(userId) });
         return;
       }
@@ -349,12 +352,18 @@ export async function startServer(
       }
       json(404, { error: "not_found" });
     })().catch((err) => {
-      console.error(
-        JSON.stringify({ msg: "http_error", requestId, err: String(err) }),
-      );
-      httpRequests.inc({ route: "unhandled", status: "500" });
-      res.writeHead(500, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "internal" }));
+      const tooLarge = err instanceof PayloadTooLarge;
+      if (!tooLarge)
+        console.error(
+          JSON.stringify({ msg: "http_error", requestId, err: String(err) }),
+        );
+      const code = tooLarge ? 413 : 500;
+      httpRequests.inc({ route: routeOf(req.url ?? ""), status: String(code) });
+      res.writeHead(code, {
+        "content-type": "application/json",
+        connection: "close",
+      });
+      res.end(JSON.stringify({ error: tooLarge ? "too_large" : "internal" }));
     });
   });
 
@@ -414,18 +423,17 @@ export async function startServer(
             sendError(ws, "bad_hello", "invalid hello payload");
             return;
           }
-          const { token, boardId, stateVector, actor } = hello.data;
+          const { token, boardId, stateVector } = hello.data;
           if (!BOARD_ID_RE.test(boardId)) {
             sendError(ws, "bad_board_id", "invalid board id");
             return;
           }
-          let userId: string;
+          let base: string;
           let role: Role;
           const share = verifyShareToken(token, boardId);
           if (share) {
             role = share.role;
-            // stable per device, so a reconnecting guest keeps its id
-            userId = actor ? `${share.actorId}-${actor}` : share.actorId;
+            base = share.actorId;
           } else {
             const verifiedId = await verifyToken(token);
             if (!verifiedId) {
@@ -440,7 +448,15 @@ export async function startServer(
               return;
             }
             role = memberRole as Role;
-            userId = actor ? `${verifiedId}-${actor}` : verifiedId;
+            base = verifiedId;
+          }
+          let userId = base;
+          let device: string | undefined;
+          if (hello.data.device !== undefined) {
+            const kept = verifyDeviceToken(base, hello.data.device);
+            const minted = kept === null ? issueDeviceToken(base) : null;
+            device = minted ? minted.token : hello.data.device;
+            userId = `${base}-${kept ?? minted!.suffix}`;
           }
           const session = await getSession(boardId);
           const missing = session.doc.missingSince(
@@ -451,6 +467,7 @@ export async function startServer(
             sv,
             missing.map((op) => encodeOp(op)),
             userId,
+            device,
           );
           ws.send(buildFrame(FRAME.SYNC_RESPONSE, payload));
 
@@ -657,7 +674,12 @@ export async function startServer(
     payload: Uint8Array,
   ): void {
     try {
-      const msg = presenceSchema.parse(JSON.parse(td.decode(payload)));
+      // the sender is whoever this connection authenticated as, never what
+      // the client claims
+      const msg = {
+        ...presenceSchema.parse(JSON.parse(td.decode(payload))),
+        userId: ctx.userId,
+      };
       const frame = buildFrame(FRAME.PRESENCE, te.encode(JSON.stringify(msg)));
       for (const c of getRoom(boardId)) {
         if (c !== ctx) c.ws.send(frame);
@@ -716,16 +738,73 @@ function initialisePort(): number {
   return p ? Number(p) : 8080;
 }
 
+class PayloadTooLarge extends Error {}
+
+const MAX_BODY = 64 * 1024;
+
 async function readJson(
   req: import("node:http").IncomingMessage,
 ): Promise<unknown> {
   const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
+  let size = 0;
+  for await (const c of req) {
+    size += (c as Buffer).length;
+    if (size > MAX_BODY) throw new PayloadTooLarge();
+    chunks.push(c as Buffer);
+  }
   try {
     return JSON.parse(Buffer.concat(chunks).toString());
   } catch {
     return {};
   }
+}
+
+// Metric labels must come from a fixed set: raw paths would let any client
+// create unbounded time series.
+const ROUTES = new Set([
+  "/healthz",
+  "/readyz",
+  "/metrics",
+  "/auth/register",
+  "/auth/login",
+  "/boards",
+]);
+
+function routeOf(path: string): string {
+  const p = path.split("?")[0]!;
+  if (ROUTES.has(p)) return p;
+  const m = /^\/boards\/[^/]+\/(members|share)$/.exec(p);
+  return m ? `/boards/:id/${m[1]}` : "other";
+}
+
+// Behind the deploy's reverse proxy every request arrives from the proxy, so
+// with TRUST_PROXY the client is the last X-Forwarded-For hop (the one the
+// proxy added; earlier hops are client-controlled).
+function clientIp(req: import("node:http").IncomingMessage): string {
+  const fwd = req.headers["x-forwarded-for"];
+  if (process.env.TRUST_PROXY && typeof fwd === "string")
+    return fwd.split(",").at(-1)!.trim();
+  return req.socket.remoteAddress ?? "";
+}
+
+// Password hashing is deliberately slow, so /auth/* is limited per address.
+// Loopback is this machine (tests, benchmarks, local development).
+const AUTH_PER_MINUTE = 20;
+const authWindows = new Map<string, { start: number; count: number }>();
+
+function authAllowed(ip: string): boolean {
+  if (ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1")
+    return true;
+  const now = Date.now();
+  if (authWindows.size > 10_000)
+    for (const [k, w] of authWindows)
+      if (now - w.start > 60_000) authWindows.delete(k);
+  const w = authWindows.get(ip);
+  if (!w || now - w.start > 60_000) {
+    authWindows.set(ip, { start: now, count: 1 });
+    return true;
+  }
+  return ++w.count <= AUTH_PER_MINUTE;
 }
 
 function createHashHex(data: Uint8Array): string {

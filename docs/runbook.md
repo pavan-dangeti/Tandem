@@ -37,7 +37,10 @@ Cloud Always Free Ampere VM; any Linux host with Docker works.
 
 Compose refuses to start without `DOMAIN`, `POSTGRES_PASSWORD`, `AUTH_SECRET`
 and `SHARE_SECRET`, and the server itself refuses to start in production with a
-secret shorter than 32 characters. `/metrics` is not routed publicly.
+secret shorter than 32 characters. `/metrics` is not routed publicly. The
+compose file sets `TRUST_PROXY=1` because Caddy is the only way in, so the
+`/auth/*` rate limit keys on the client address Caddy appends to
+`X-Forwarded-For`; never set it on a server that is reachable directly.
 
 Local observability stack (server, Prometheus on :9090, Grafana on :3001 with
 the provisioned "Tandem sync server" dashboard):

@@ -232,7 +232,7 @@ describe("anti-entropy", () => {
         boardId: boardId!,
         token: owner.token!,
         userId: owner.userId!,
-        deviceId: device,
+        device: "",
         name: device,
         color: "#3355ff",
         url: `ws://127.0.0.1:${port}/ws`,

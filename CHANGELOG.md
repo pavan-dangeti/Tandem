@@ -52,6 +52,11 @@ library, and measured against the established ones.
 - Frames over 1 MiB are rejected by the WebSocket layer before buffering, and
   socket errors are handled per connection instead of crashing the node.
 - The server refuses to start in production without 32-character secrets.
+- Device actors are bound to server-signed device tokens; presence is
+  re-stamped with the sender's identity.
+- `/auth/*` is rate-limited per client address, registration no longer
+  reveals existing accounts, HTTP bodies are capped at 64 KiB, and metric
+  labels come from a fixed route list.
 - A strict content security policy on the client and `default-src 'none'` on
   the API; board text renders on a canvas, never as markup.
 - Dependency auditing and container scanning in CI.
