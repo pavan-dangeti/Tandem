@@ -1,13 +1,18 @@
-import { describe, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import fc from "fast-check";
 import { Doc } from "../src/index.js";
 import type { Op } from "../src/index.js";
-import { ACTORS, Action, Ctx, interpret, newCtx } from "./helpers.js";
+import { ACTORS, interpret, newCtx, type Action, type Ctx } from "./helpers.js";
 import { refMaterialize } from "./reference.js";
 
 const RUNS = Number(process.env.PBT_RUNS ?? 100);
-const SEED =
-  process.env.PBT_SEED === undefined ? undefined : Number(process.env.PBT_SEED);
+// fast-check prints the seed of any failing run; PBT_SEED=<seed> replays it
+const PARAMS = {
+  numRuns: RUNS,
+  ...(process.env.PBT_SEED === undefined
+    ? {}
+    : { seed: Number(process.env.PBT_SEED) }),
+};
 
 const actionArb: fc.Arbitrary<Action> = fc.oneof(
   fc.record({
@@ -114,8 +119,66 @@ describe("PBT convergence", () => {
           );
         },
       ),
-      { numRuns: RUNS, seed: SEED },
+      PARAMS,
     );
+  });
+
+  it("a replica rebuilt from compacted ops matches and keeps converging", () => {
+    fc.assert(
+      fc.property(
+        fc.array(actionArb, { minLength: 1, maxLength: 60 }),
+        fc.nat(),
+        (actions, split) => {
+          const { allOps } = runScript(actions);
+          const cut = split % (allOps.length + 1);
+          const full = new Doc("full");
+          full.merge(allOps.slice(0, cut));
+          const rebuilt = new Doc("rebuilt");
+          rebuilt.merge(full.compactOps());
+          rebuilt.markSeen(full.stateVector());
+          const sameVector =
+            JSON.stringify([...rebuilt.stateVector()].sort()) ===
+            JSON.stringify([...full.stateVector()].sort());
+          full.merge(allOps.slice(cut));
+          rebuilt.merge(allOps.slice(cut));
+          return sameVector && stripped(full) === stripped(rebuilt);
+        },
+      ),
+      PARAMS,
+    );
+  });
+
+  it("a partial replica catches up from missingSince plus markSeen", () => {
+    fc.assert(
+      fc.property(
+        fc.array(actionArb, { minLength: 1, maxLength: 60 }),
+        fc.array(fc.boolean(), { maxLength: 200 }),
+        (actions, keep) => {
+          const { allOps } = runScript(actions);
+          const server = new Doc("server");
+          server.merge(allOps);
+          const client = new Doc("client");
+          client.merge(allOps.filter((_, i) => keep[i] ?? false));
+          client.merge(server.missingSince(client.stateVector()));
+          client.markSeen(server.stateVector());
+          return (
+            stripped(client) === stripped(server) &&
+            server.missingSince(client.stateVector()).length === 0
+          );
+        },
+      ),
+      PARAMS,
+    );
+  });
+
+  it("compaction drops superseded property writes", () => {
+    const doc = new Doc("a");
+    doc.applyLocal([{ t: "putObject", objId: "a:1", type: "rect" }]);
+    for (let i = 0; i < 100; i++)
+      doc.applyLocal([
+        { t: "putProp", objId: "a:1", key: "x", value: { kind: "int", v: i } },
+      ]);
+    expect(doc.compactOps()).toHaveLength(2);
   });
 
   it("merge is commutative, associative, idempotent", () => {
@@ -145,7 +208,7 @@ describe("PBT convergence", () => {
           );
         },
       ),
-      { numRuns: RUNS, seed: SEED },
+      PARAMS,
     );
   });
 
@@ -190,7 +253,7 @@ describe("PBT convergence", () => {
           return ours.includes("shapes"); // keep stripped used
         },
       ),
-      { numRuns: RUNS, seed: SEED },
+      PARAMS,
     );
   });
 
@@ -222,7 +285,7 @@ describe("PBT convergence", () => {
           return stripped(a0) === before;
         },
       ),
-      { numRuns: RUNS, seed: SEED },
+      PARAMS,
     );
   });
 
@@ -243,7 +306,7 @@ describe("PBT convergence", () => {
           return stripped(d) === before;
         },
       ),
-      { numRuns: RUNS, seed: SEED },
+      PARAMS,
     );
   });
 });

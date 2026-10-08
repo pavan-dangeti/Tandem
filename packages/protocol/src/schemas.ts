@@ -72,6 +72,12 @@ export const helloSchema = z.object({
   token: z.string().min(1).max(4096),
   boardId: z.string().min(1).max(128),
   stateVector: z.record(z.string().max(64), z.number().int().nonnegative()),
+  // A per-device id appended to the session's actor, so two devices on one
+  // account or one share link never collide on (actor, seq).
+  actor: z
+    .string()
+    .regex(/^[a-z0-9]{1,24}$/)
+    .optional(),
 });
 
 export const ackSchema = z.object({

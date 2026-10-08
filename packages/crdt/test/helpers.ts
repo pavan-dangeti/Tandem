@@ -3,7 +3,7 @@ import type { Op } from "../src/index.js";
 
 export const ACTORS = ["alpha", "beta", "gamma"];
 
-export function objId(actor: string, n: number): string {
+function objId(actor: string, n: number): string {
   return `${actor}:${n}`;
 }
 

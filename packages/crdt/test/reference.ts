@@ -6,11 +6,6 @@ function cmp(a: HLC, b: HLC): number {
   return a.actor < b.actor ? -1 : a.actor > b.actor ? 1 : 0;
 }
 
-function rgaIdOf(objId: string): RGAId {
-  const i = objId.lastIndexOf(":");
-  return { actor: objId.slice(0, i), counter: Number(objId.slice(i + 1)) };
-}
-
 function keyOf(id: RGAId): string {
   return `${id.actor}:${id.counter}`;
 }
@@ -30,12 +25,14 @@ interface TNode {
   flagHlc: HLC | null;
 }
 
-export interface RefState {
+interface RefState {
   objects: Map<
     string,
     {
       type: string;
       typeHlc: HLC | null;
+      /** z-node identity, taken from the op that created the object */
+      zId: RGAId;
       props: Map<string, { value: Value | { kind: "removed" }; hlc: HLC }>;
       deleted: { tag: "delete" | "restore"; hlc: HLC } | null;
     }
@@ -44,14 +41,20 @@ export interface RefState {
   texts: Map<string, TNode[]>;
 }
 
-export function refApply(st: RefState, op: Op): void {
+function refApply(st: RefState, op: Op): void {
   const hlc: HLC = { wall: op.wall, logical: op.logical, actor: op.actor };
   const s = op.spec;
   switch (s.t) {
     case "putObject": {
       let o = st.objects.get(s.objId);
       if (!o) {
-        o = { type: s.type, typeHlc: hlc, props: new Map(), deleted: null };
+        o = {
+          type: s.type,
+          typeHlc: hlc,
+          zId: { actor: op.actor, counter: op.seq },
+          props: new Map(),
+          deleted: null,
+        };
         st.objects.set(s.objId, o);
       } else if (o.typeHlc === null || cmp(hlc, o.typeHlc) > 0) {
         o.type = s.type;
@@ -83,7 +86,9 @@ export function refApply(st: RefState, op: Op): void {
     }
     case "zInsert":
     case "zRemove": {
-      const key = keyOf(rgaIdOf(s.objId));
+      const key = keyOf(
+        st.objects.get(s.objId)?.zId ?? { actor: op.actor, counter: op.seq },
+      );
       let n = st.znodes.get(key);
       if (!n) {
         n = {
@@ -173,16 +178,18 @@ export function refMaterialize(ops: Op[]): {
     texts: new Map(),
   };
   for (const op of ops) refApply(st, op);
+  const zIdOfNode = (objId: string): RGAId =>
+    st.objects.get(objId)?.zId ?? { actor: "?", counter: 0 };
   const zWalk = refRgaWalk(
     [...st.znodes.values()],
     (n) => (n.parent ? keyOf(n.parent) : null),
-    (n) => Number(n.objId.slice(n.objId.lastIndexOf(":") + 1)),
-    (n) => n.objId.slice(0, n.objId.lastIndexOf(":")),
+    (n) => zIdOfNode(n.objId).counter,
+    (n) => zIdOfNode(n.objId).actor,
   );
-  const order = zWalk.map(
-    (n) =>
-      `${n.removed ? "!" : ""}${n.objId.slice(0, n.objId.lastIndexOf(":"))}:${Number(n.objId.slice(n.objId.lastIndexOf(":") + 1))}`,
-  );
+  const order = zWalk.map((n) => {
+    const id = zIdOfNode(n.objId);
+    return `${n.removed ? "!" : ""}${id.actor}:${id.counter}`;
+  });
   const texts: Record<string, string> = {};
   for (const objId of [...st.texts.keys()].sort()) {
     const tWalk = refRgaWalk(

@@ -4,7 +4,7 @@ import { registerFor } from "./lww.js";
 import type { Register } from "./lww.js";
 import { opKey } from "./op.js";
 import type { Op, OpSpec, Value } from "./op.js";
-import { RGA } from "./rga.js";
+import { RGA, rgaIdKey } from "./rga.js";
 import type { RGAId } from "./rga.js";
 
 export interface Shape {
@@ -17,6 +17,12 @@ export interface Shape {
 interface ObjState {
   id: string;
   type: string;
+  /**
+   * Identity of this object's node in the shared z-order RGA. Taken from the op
+   * that created the object, so it is unique per object, identical on every
+   * replica, and needs no convention on the objId string itself.
+   */
+  zId: RGAId;
   props: Map<string, Register<Value | { kind: "removed" }>>;
   deleted: { tag: "delete" | "restore"; hlc: HLC } | null;
   typeHlc: HLC | null;
@@ -39,8 +45,10 @@ export class Doc {
   private undoStacks = new Map<string, UndoEntry[]>();
   private redoStacks = new Map<string, UndoEntry[]>();
   private pendingByObj = new Map<string, Op[]>();
+  /** ops this replica authored; sequence numbers belong to the actor */
+  private authored = 0;
 
-  private readonly actor: string;
+  private actor: string;
 
   constructor(actor: string) {
     this.actor = actor;
@@ -57,6 +65,7 @@ export class Doc {
       const op: Op = { ...this.clock, seq, spec };
       this.apply(op);
       out.push(op);
+      this.authored++;
       if (prev !== null) inverses.unshift(prev);
     }
     if (out.length > 0) {
@@ -108,6 +117,7 @@ export class Doc {
           o = {
             id: s.objId,
             type: s.type,
+            zId: { actor: op.actor, counter: op.seq },
             props: new Map(),
             deleted: {
               tag: "restore",
@@ -174,23 +184,19 @@ export class Doc {
         break;
       }
       case "zInsert": {
-        this.order.insert(
-          { counter: zCounter(s.objId), actor: objActor(s.objId) },
-          s.parent,
-          s.objId,
-          {
-            wall: op.wall,
-            logical: op.logical,
-            actor: op.actor,
-          },
-        );
+        this.order.insert(this.zIdOf(s.objId, op), s.parent, s.objId, {
+          wall: op.wall,
+          logical: op.logical,
+          actor: op.actor,
+        });
         break;
       }
       case "zRemove": {
-        this.order.delete(
-          { counter: zCounter(s.objId), actor: objActor(s.objId) },
-          { wall: op.wall, logical: op.logical, actor: op.actor },
-        );
+        this.order.delete(this.zIdOf(s.objId, op), {
+          wall: op.wall,
+          logical: op.logical,
+          actor: op.actor,
+        });
         break;
       }
       case "textInsert": {
@@ -216,6 +222,37 @@ export class Doc {
     }
   }
 
+  /**
+   * Adopt the actor id the server assigned us: a guest joining by share link is
+   * named by the server, and ops are signed with this id. Only safe while we
+   * have authored nothing, because sequence numbers belong to the actor.
+   * Remote ops may already be present.
+   */
+  setActor(actor: string): void {
+    if (this.authored > 0)
+      throw new Error("cannot rename a replica that has already authored ops");
+    this.actor = actor;
+    this.clock = { ...this.clock, actor };
+  }
+
+  get actorId(): string {
+    return this.actor;
+  }
+
+  /**
+   * The z-node id for an object: recorded when the object was created, or - if
+   * a z op is applied before its putObject - the identity of the inserting op.
+   * Every replica derives it from the same op, so they agree either way.
+   */
+  private zIdOf(objId: string, op: Op): RGAId {
+    return (
+      this.objects.get(objId)?.zId ?? {
+        actor: op.actor,
+        counter: op.seq,
+      }
+    );
+  }
+
   private recordSeq(op: Op): void {
     let set = this.seqs.get(op.actor);
     if (set === undefined) this.seqs.set(op.actor, (set = new Set()));
@@ -236,12 +273,12 @@ export class Doc {
     return out;
   }
 
+  /**
+   * The ops a replica at `vec` lacks, without superseded property writes. The
+   * receiver must then call markSeen with this document's state vector.
+   */
   missingSince(vec: Map<string, number>): Op[] {
-    const out: Op[] = [];
-    for (const op of this.opIndex.values()) {
-      if (op.seq > (vec.get(op.actor) ?? 0)) out.push(op);
-    }
-    return out;
+    return this.compactOps().filter((op) => op.seq > (vec.get(op.actor) ?? 0));
   }
 
   shapes(): Shape[] {
@@ -305,14 +342,40 @@ export class Doc {
       }
     }
     this.order.gcDeleted((id) => {
+      const obj = [...this.objects.values()].find(
+        (o) => rgaIdKey(o.zId) === rgaIdKey(id),
+      );
+      if (!obj) return false;
       const op = [...this.opIndex.values()].find(
-        (o) =>
-          o.spec.t === "zInsert" &&
-          zCounter(o.spec.objId) === id.counter &&
-          objActor(o.spec.objId) === id.actor,
+        (o) => o.spec.t === "zInsert" && o.spec.objId === obj.id,
       );
       return op !== undefined && !stableOp(op);
     });
+  }
+
+  /**
+   * The ops that rebuild this document's state. Property writes that lost their
+   * last-writer-wins race change nothing on any replica, so they are dropped:
+   * a snapshot then grows with the board's live state, not its edit history.
+   * Whoever loads it must call markSeen with this document's state vector.
+   */
+  compactOps(): Op[] {
+    return [...this.opIndex.values()].filter((op) => {
+      const s = op.spec;
+      if (s.t !== "putProp" && s.t !== "removeProp") return true;
+      const winner = this.objects.get(s.objId)?.props.get(s.key);
+      return winner === undefined || hlcCompare(winner.hlc, op) === 0;
+    });
+  }
+
+  /** Records ops up to vec[actor] as seen, covering those compaction dropped. */
+  markSeen(vec: Map<string, number>): void {
+    for (const [actor, upTo] of vec) {
+      let set = this.seqs.get(actor);
+      if (set === undefined) this.seqs.set(actor, (set = new Set()));
+      for (let seq = 1; seq <= upTo; seq++) set.add(seq);
+      this.lastSeq.set(actor, Math.max(this.lastSeq.get(actor) ?? 0, upTo));
+    }
   }
 
   materialize(): {
@@ -343,6 +406,7 @@ export class Doc {
       const op: Op = { ...this.clock, seq, spec };
       this.apply(op);
       out.push(op);
+      this.authored++;
     }
     return out;
   }
@@ -434,16 +498,6 @@ export class Doc {
 
 function targetObjId(spec: OpSpec): string | null {
   return "objId" in spec ? spec.objId : null;
-}
-
-function zCounter(objId: string): number {
-  const i = objId.indexOf(":");
-  return Number(objId.slice(i + 1));
-}
-
-function objActor(objId: string): string {
-  const i = objId.indexOf(":");
-  return objId.slice(0, i);
 }
 
 function seqOfDeleted(ops: Iterable<Op>, objId: string): number {

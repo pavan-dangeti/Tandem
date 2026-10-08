@@ -69,11 +69,19 @@ export function unpackOps(buf: Uint8Array): Uint8Array[] {
 }
 
 // SyncResponse payload: [u32be jsonLen][JSON {stateVector}][packed ops]
+// The JSON header also carries the actor id the server assigned: share-link
+// guests get one per link and device, and the client must sign ops as it.
 export function packSyncResponse(
   stateVector: Record<string, number>,
   ops: Uint8Array[],
+  userId?: string,
 ): Uint8Array {
-  const json = new TextEncoder().encode(JSON.stringify({ stateVector }));
+  const json = new TextEncoder().encode(
+    JSON.stringify({
+      stateVector,
+      ...(userId !== undefined ? { userId } : {}),
+    }),
+  );
   const opsPayload = packOps(ops);
   const out = new Uint8Array(4 + json.length + opsPayload.length);
   new DataView(out.buffer).setUint32(0, json.length);
@@ -85,6 +93,7 @@ export function packSyncResponse(
 export function unpackSyncResponse(payload: Uint8Array): {
   stateVector: Record<string, number>;
   ops: Uint8Array[];
+  userId?: string;
 } {
   const dv = new DataView(
     payload.buffer,
@@ -92,14 +101,14 @@ export function unpackSyncResponse(payload: Uint8Array): {
     payload.byteLength,
   );
   const jsonLen = dv.getUint32(0);
-  const { stateVector } = JSON.parse(
+  const { stateVector, userId } = JSON.parse(
     new TextDecoder().decode(payload.subarray(4, 4 + jsonLen)),
-  ) as { stateVector: Record<string, number> };
+  ) as { stateVector: Record<string, number>; userId?: string };
   const ops =
     payload.byteLength > 4 + jsonLen
       ? unpackOps(payload.subarray(4 + jsonLen))
       : [];
-  return { stateVector, ops };
+  return { stateVector, ops, ...(userId !== undefined ? { userId } : {}) };
 }
 
 export interface Presence {
