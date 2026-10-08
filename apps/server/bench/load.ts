@@ -1,269 +1,283 @@
-// Edit-to-remote latency under load: N editor clients spread over M server nodes
-// sharing one Redis bus, all editing one board. Records p50/p95/p99 of the time
-// from an edit being applied locally to it being applied on every other client.
+// Edit-to-remote latency under sustained load. Server nodes run as separate
+// processes (the production bundle) sharing Postgres and Redis; simulated
+// editors run in worker processes. Latency is measured from an edit being
+// issued to it being applied on every other replica of its board.
 //
-//   TEST_REDIS_URL=redis://localhost:6379 pnpm --filter @tandem/server bench
+//   docker compose up -d --wait postgres redis
+//   DATABASE_URL=postgres://tandem:tandem@localhost:5434/tandem pnpm --filter @tandem/server bench
 //
-// Writes results/load.json next to the repo root.
+// Writes results/scale.json.
+import { fork, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
-import { performance } from "node:perf_hooks";
-import WebSocket from "ws";
-import { Doc } from "@tandem/crdt";
-import { startServer, type RunningServer } from "../src/server.js";
-import { MemoryMetaStore } from "../src/meta.js";
-import { PostgresOpStore, type OpStore } from "../src/store.js";
-import { PostgresMetaStore, type MetaStore } from "../src/meta.js";
-import { RedisBus } from "../src/bus.js";
-import { SyncClient } from "../../web/src/lib/sync.js";
+import type { FromWorker, ToWorker, WorkerClient } from "./load-worker.js";
 
 const NODES = Number(process.env.LOAD_NODES ?? 2);
-const EDITORS = Number(process.env.LOAD_EDITORS ?? 20);
-const EDITS_PER_EDITOR = Number(process.env.LOAD_EDITS ?? 40);
+const RATE = Number(process.env.LOAD_RATE ?? 2);
+const DURATION_MS = Number(process.env.LOAD_SECONDS ?? 10) * 1000;
+const REPEATS = Number(process.env.LOAD_REPEATS ?? 3);
+const WORKERS = Number(
+  process.env.LOAD_WORKERS ?? Math.max(1, os.cpus().length - NODES - 2),
+);
+// "boards x editors-per-board"
+const SWEEP = (
+  process.env.LOAD_SWEEP ?? "1x20,1x50,1x100,1x150,1x200,1x300,25x8"
+).split(",");
+const SLO_P95_MS = 300;
 const DATABASE_URL = process.env.DATABASE_URL;
+const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
+if (!DATABASE_URL)
+  throw new Error("DATABASE_URL is required: nodes share boards via Postgres");
 
-interface Sample {
-  editor: string;
-  ms: number;
+interface NodeProc {
+  proc: ChildProcess;
+  port: number;
 }
 
-function percentile(sorted: number[], p: number): number {
-  if (sorted.length === 0) return NaN;
-  const idx = Math.min(
-    sorted.length - 1,
-    Math.ceil((p / 100) * sorted.length) - 1,
-  );
-  return sorted[idx]!;
-}
-
-async function runConfig(
-  editorsCount: number,
-  nodesCount: number,
-): Promise<Record<string, unknown>> {
-  const redisUrl = process.env.TEST_REDIS_URL ?? "redis://localhost:6379";
-  const meta: MetaStore = DATABASE_URL
-    ? new PostgresMetaStore(DATABASE_URL)
-    : new MemoryMetaStore();
-  const store: OpStore = DATABASE_URL
-    ? new PostgresOpStore(DATABASE_URL)
-    : new (await import("../src/store.js")).MemoryOpStore();
-  await meta.init();
-  await store.init();
-
-  const nodes: RunningServer[] = [];
-  for (let i = 0; i < nodesCount; i++) {
-    const bus = new RedisBus(redisUrl);
-    await bus.connect();
-    nodes.push(await startServer({ port: 0, metaStore: meta, store, bus }));
+async function waitReady(port: number): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    try {
+      if ((await fetch(`http://127.0.0.1:${port}/readyz`)).ok) return;
+    } catch {
+      // not listening yet
+    }
+    await new Promise((r) => setTimeout(r, 100));
   }
+  throw new Error(`node on ${port} never became ready`);
+}
 
-  // one owner account, one board, every editor added as editor
-  const suffix = Date.now();
-  const reg = async (
-    email: string,
-  ): Promise<{ userId: string; token: string }> => {
-    const res = await fetch(
-      `http://127.0.0.1:${nodes[0]!.port}/auth/register`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email, password: "password123" }),
+async function startNodes(): Promise<NodeProc[]> {
+  const nodes = Array.from({ length: NODES }, (_, i) => {
+    const port = 9100 + i;
+    const proc = spawn("node", ["dist/index.js"], {
+      cwd: new URL("..", import.meta.url),
+      env: {
+        ...process.env,
+        PORT: String(port),
+        DATABASE_URL,
+        REDIS_URL,
+        AUTH_SECRET: "load-test-secret-load-test-secret",
+        SHARE_SECRET: "load-test-share-secret-load-test",
       },
-    );
-    return (await res.json()) as { userId: string; token: string };
+      stdio: ["ignore", "ignore", "inherit"],
+    });
+    return { proc, port };
+  });
+  await Promise.all(nodes.map((n) => waitReady(n.port)));
+  return nodes;
+}
+
+async function processStats(
+  port: number,
+): Promise<{ cpuSeconds: number; rssBytes: number }> {
+  const text = await (await fetch(`http://127.0.0.1:${port}/metrics`)).text();
+  const read = (name: string): number =>
+    Number(new RegExp(`^${name} (\\S+)$`, "m").exec(text)?.[1] ?? NaN);
+  return {
+    cpuSeconds: read("tandem_process_cpu_seconds_total"),
+    rssBytes: read("tandem_process_resident_memory_bytes"),
   };
-  const owner = await reg(`load-owner-${suffix}@test.local`);
-  const breg = await fetch(`http://127.0.0.1:${nodes[0]!.port}/boards`, {
+}
+
+async function post(
+  port: number,
+  path: string,
+  body: unknown,
+  token?: string,
+): Promise<Record<string, string>> {
+  const res = await fetch(`http://127.0.0.1:${port}${path}`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      authorization: `Bearer ${owner.token}`,
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
     },
-    body: "{}",
+    body: JSON.stringify(body),
   });
-  const { boardId } = (await breg.json()) as { boardId: string };
-
-  const editors = [owner];
-  for (let i = 1; i < editorsCount; i++) {
-    const email = `load-e${i}-${suffix}@test.local`;
-    editors.push(await reg(email));
-    await fetch(
-      `http://127.0.0.1:${nodes[0]!.port}/boards/${boardId}/members`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${owner.token}`,
-        },
-        body: JSON.stringify({ email, role: "editor" }),
-      },
-    );
-  }
-
-  const clients: SyncClient[] = [];
-  const docs: Doc[] = [];
-  for (let i = 0; i < editorsCount; i++) {
-    const acc = editors[i]!;
-    const doc = new Doc(acc.userId);
-    const client = new SyncClient({
-      doc,
-      boardId,
-      token: acc.token,
-      userId: acc.userId,
-      name: `e${i}`,
-      color: "#3355ff",
-      url: `ws://127.0.0.1:${nodes[i % nodesCount]!.port}/ws`,
-      socketFactory: (u) => new WebSocket(u) as unknown as WebSocket,
-    });
-    await client.start();
-    docs.push(doc);
-    clients.push(client);
-  }
-  await Promise.all(
-    clients.map(
-      (c) =>
-        new Promise<void>((res) => {
-          const check = (): void =>
-            c.status === "open" ? res() : setTimeout(check, 20);
-          check();
-        }),
-    ),
-  );
-
-  // seed the board so every client has a shared base
-  await clients[0]!.edit([
-    { t: "putObject", objId: "board:base", type: "rect" },
-    { t: "zInsert", objId: "board:base", parent: null },
-  ]);
-  await new Promise((r) => setTimeout(r, 300));
-
-  const samples: Sample[] = [];
-  const edits: Promise<void>[] = [];
-  const tStart = performance.now();
-  for (let round = 0; round < EDITS_PER_EDITOR; round++) {
-    for (let i = 0; i < editorsCount; i++) {
-      const client = clients[i]!;
-      const acc = editors[i]!;
-      const key = `k${round}`;
-      const t0 = performance.now();
-      const promise = client
-        .edit([
-          {
-            t: "putProp",
-            objId: "board:base",
-            key,
-            value: { kind: "int", v: i },
-          },
-        ])
-        .then(
-          () =>
-            new Promise<void>((res, rej) => {
-              // latency = from the edit being issued to it being applied on
-              // every *other* replica (queueing included)
-              const poll = (): void => {
-                const others = docs.filter((_, j) => j !== i);
-                if (
-                  others.every((d) =>
-                    d.opList.some(
-                      (op) => op.spec.t === "putProp" && op.spec.key === key,
-                    ),
-                  )
-                ) {
-                  samples.push({
-                    editor: acc.userId,
-                    ms: performance.now() - t0,
-                  });
-                  res();
-                } else if (performance.now() - t0 > 20_000) {
-                  rej(new Error(`fan-out timeout for ${key}`));
-                } else {
-                  setTimeout(poll, 2);
-                }
-              };
-              poll();
-            }),
-        );
-      edits.push(promise);
-    }
-  }
-  await Promise.all(edits);
-  const elapsed = performance.now() - tStart;
-
-  const ms = samples.map((s) => s.ms).sort((a, b) => a - b);
-  const totalOps = editorsCount * EDITS_PER_EDITOR;
-  const result = {
-    date: new Date().toISOString(),
-    hardware: `${os.cpus()[0]?.model} x${os.cpus().length}, ${Math.round(os.totalmem() / 1024 ** 3)}GB RAM, node ${process.version}`,
-    config: {
-      nodes: nodesCount,
-      editors: editorsCount,
-      editsPerEditor: EDITS_PER_EDITOR,
-      database: DATABASE_URL ? "postgres" : "memory",
-    },
-    fanout: {
-      samples: ms.length,
-      p50: percentile(ms, 50),
-      p95: percentile(ms, 95),
-      p99: percentile(ms, 99),
-      max: ms[ms.length - 1],
-    },
-    throughputOpsPerSec: Math.round((totalOps / elapsed) * 1000),
-    elapsedMs: Math.round(elapsed),
-  };
-
-  for (const c of clients) c.close();
-  // let in-flight batches finish before tearing the bus down, otherwise the
-  // tail of the run logs publish failures that are really just shutdown order
-  await new Promise((r) => setTimeout(r, 500));
-  for (const n of nodes) await n.close();
-  await meta.close();
-  await store.close();
-  return result;
+  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+  return (await res.json()) as Record<string, string>;
 }
 
-async function main(): Promise<void> {
-  fs.mkdirSync(new URL("../../../results", import.meta.url), {
-    recursive: true,
-  });
-
-  // LOAD_SWEEP="20,50,100,200,400" records a scaling curve instead of one point
-  const sweep = process.env.LOAD_SWEEP;
-  if (sweep) {
-    const points: Record<string, unknown>[] = [];
-    for (const count of sweep.split(",").map((n) => Number(n.trim()))) {
-      const r = await runConfig(count, NODES);
-      points.push(r);
-      console.log(
-        `editors=${count} p50=${r.fanout!.p50!.toFixed(1)}ms p95=${r.fanout!.p95!.toFixed(1)}ms p99=${r.fanout!.p99!.toFixed(1)}ms ops/s=${r.throughputOpsPerSec}`,
+async function setup(
+  nodes: NodeProc[],
+  boards: number,
+  editors: number,
+): Promise<WorkerClient[]> {
+  const port = nodes[0]!.port;
+  const run = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const email = (b: number, i: number): string =>
+    `load-${run}-b${b}-e${i}@test.local`;
+  const clients: WorkerClient[] = [];
+  for (let b = 0; b < boards; b++) {
+    const register = (i: number): Promise<Record<string, string>> =>
+      post(port, "/auth/register", {
+        email: email(b, i),
+        password: "password123",
+      });
+    const owner = await register(0);
+    const { boardId } = await post(port, "/boards", {}, owner.token);
+    const accounts = [owner];
+    for (let i = 1; i < editors; i += 20) {
+      const batch = Array.from(
+        { length: Math.min(20, editors - i) },
+        (_, j) => i + j,
       );
+      accounts.push(...(await Promise.all(batch.map(register))));
     }
-    fs.writeFileSync(
-      new URL("../../../results/scale.json", import.meta.url),
-      JSON.stringify(
-        {
-          date: new Date().toISOString(),
-          hardware: points[0]?.hardware,
-          sloNote: "target: p95 < 300ms for 50 editors on one board",
-          points,
-        },
-        null,
-        2,
-      ) + "\n",
+    await Promise.all(
+      accounts
+        .slice(1)
+        .map((_, i) =>
+          post(
+            port,
+            `/boards/${boardId}/members`,
+            { email: email(b, i + 1), role: "editor" },
+            owner.token,
+          ),
+        ),
     );
-    console.log("wrote results/scale.json");
-    return;
+    accounts.forEach((a, i) =>
+      clients.push({
+        userId: a.userId!,
+        token: a.token!,
+        boardId: boardId!,
+        url: `ws://127.0.0.1:${nodes[(b + i) % nodes.length]!.port}/ws`,
+      }),
+    );
   }
-
-  const result = await runConfig(EDITORS, NODES);
-  console.log(JSON.stringify(result, null, 2));
-  fs.writeFileSync(
-    new URL("../../../results/load.json", import.meta.url),
-    JSON.stringify(result, null, 2) + "\n",
-  );
-  console.log("wrote results/load.json");
+  return clients;
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+function percentile(sorted: number[], p: number): number {
+  return sorted[Math.min(sorted.length - 1, Math.ceil(p * sorted.length) - 1)]!;
+}
+
+function onMessage<T extends FromWorker["type"]>(
+  w: ChildProcess,
+  type: T,
+): Promise<Extract<FromWorker, { type: T }>> {
+  return new Promise((res) =>
+    w.on("message", (m: FromWorker) => {
+      if (m.type === type) res(m as Extract<FromWorker, { type: T }>);
+    }),
+  );
+}
+
+async function runPoint(boards: number, editors: number) {
+  const nodes = await startNodes();
+  try {
+    const clients = await setup(nodes, boards, editors);
+    const shares: WorkerClient[][] = Array.from(
+      { length: Math.min(WORKERS, clients.length) },
+      () => [],
+    );
+    clients.forEach((c, i) => shares[i % shares.length]!.push(c));
+    const workers = shares.map((share) => {
+      const w = fork(new URL("./load-worker.ts", import.meta.url));
+      w.send({
+        type: "init",
+        clients: share,
+        rate: RATE,
+        durationMs: DURATION_MS,
+      } satisfies ToWorker);
+      return w;
+    });
+    const results = workers.map((w) => onMessage(w, "done"));
+    await Promise.all(workers.map((w) => onMessage(w, "ready")));
+
+    const before = await Promise.all(nodes.map((n) => processStats(n.port)));
+    const startAt = Date.now() + 500;
+    for (const w of workers) w.send({ type: "go", startAt } satisfies ToWorker);
+    // CPU is sampled over the editing window only, not the drain afterwards
+    await new Promise((r) => setTimeout(r, startAt + DURATION_MS - Date.now()));
+    const after = await Promise.all(nodes.map((n) => processStats(n.port)));
+    const done = await Promise.all(results);
+
+    const issued = new Map(done.flatMap((d) => d.issued));
+    const arrived = new Map<string, { last: number; count: number }>();
+    for (const d of done)
+      for (const [id, last, count] of d.arrivals) {
+        const a = arrived.get(id);
+        if (a) {
+          a.last = Math.max(a.last, last);
+          a.count += count;
+        } else arrived.set(id, { last, count });
+      }
+    const latencies: number[] = [];
+    let incomplete = 0;
+    for (const [id, t0] of issued) {
+      const a = arrived.get(id);
+      if (a && a.count === editors - 1) latencies.push(a.last - t0);
+      else incomplete++;
+    }
+    latencies.sort((a, b) => a - b);
+    const windowS = DURATION_MS / 1000;
+    return {
+      edits: issued.size,
+      incomplete,
+      p50: percentile(latencies, 0.5),
+      p95: percentile(latencies, 0.95),
+      p99: percentile(latencies, 0.99),
+      max: latencies[latencies.length - 1]!,
+      editsPerSec: Math.round(issued.size / windowS),
+      workerCpuPercent: Math.max(...done.map((d) => d.cpuPercent)),
+      nodes: nodes.map((_, i) => ({
+        cpuPercent: Math.round(
+          ((after[i]!.cpuSeconds - before[i]!.cpuSeconds) / windowS) * 100,
+        ),
+        rssMB: Math.round(after[i]!.rssBytes / 2 ** 20),
+      })),
+    };
+  } finally {
+    for (const n of nodes) n.proc.kill("SIGTERM");
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
+const median = (xs: number[]): number =>
+  [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
+
+const points = [];
+for (const spec of SWEEP) {
+  const [boards, editors] = spec.split("x").map(Number) as [number, number];
+  const runs = [];
+  for (let r = 0; r < REPEATS; r++) runs.push(await runPoint(boards, editors));
+  const p95s = runs.map((x) => x.p95);
+  const point = {
+    boards,
+    editorsPerBoard: editors,
+    p50: median(runs.map((x) => x.p50)),
+    p95: median(p95s),
+    p95Range: [Math.min(...p95s), Math.max(...p95s)],
+    p99: median(runs.map((x) => x.p99)),
+    incomplete: runs.reduce((n, x) => n + x.incomplete, 0),
+    runs,
+  };
+  points.push(point);
+  console.log(
+    `${boards} board(s) x ${editors} editors: p50=${point.p50.toFixed(1)} p95=${point.p95.toFixed(1)} p99=${point.p99.toFixed(1)} ms, incomplete=${point.incomplete}`,
+  );
+}
+
+fs.writeFileSync(
+  new URL("../../../results/scale.json", import.meta.url),
+  JSON.stringify(
+    {
+      date: new Date().toISOString(),
+      hardware: `${os.cpus()[0]?.model} x${os.cpus().length}, ${Math.round(os.totalmem() / 2 ** 30)}GB RAM, ${os.platform()} ${os.release()}, node ${process.version}`,
+      method:
+        "sustained load; server nodes and editor workers are separate processes on one machine; Postgres and Redis in Docker on the same machine",
+      config: {
+        nodes: NODES,
+        editsPerSecPerEditor: RATE,
+        durationSeconds: DURATION_MS / 1000,
+        workers: WORKERS,
+        repeats: REPEATS,
+      },
+      slo: { p95Ms: SLO_P95_MS, editorsPerBoard: 50 },
+      points,
+    },
+    null,
+    2,
+  ) + "\n",
+);
+console.log("wrote results/scale.json");

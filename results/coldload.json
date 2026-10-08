@@ -1,0 +1,83 @@
+{
+  "date": "2026-10-08T14:58:07.196Z",
+  "hardware": "Apple M5 x10, 16GB RAM, darwin 25.6.0, node v22.23.2",
+  "method": "fresh server process per run (cold cache); time from client start to a fully applied board; Postgres in Docker on the same machine",
+  "history": {
+    "ops": 100000,
+    "shapes": 2000,
+    "snapshotTail": 2000
+  },
+  "slo": {
+    "ms": 2000
+  },
+  "results": {
+    "log only": {
+      "ms": {
+        "mean": 487.0464083999999,
+        "ci95": 75.89906889362312
+      },
+      "opsSentToClient": 6735,
+      "runs": [
+        {
+          "ms": 481.08837499999936,
+          "ops": 6735,
+          "shapes": 2000
+        },
+        {
+          "ms": 438.01779199999874,
+          "ops": 6735,
+          "shapes": 2000
+        },
+        {
+          "ms": 436.14300000000003,
+          "ops": 6735,
+          "shapes": 2000
+        },
+        {
+          "ms": 493.78008300000147,
+          "ops": 6735,
+          "shapes": 2000
+        },
+        {
+          "ms": 586.202792,
+          "ops": 6735,
+          "shapes": 2000
+        }
+      ]
+    },
+    "snapshot + 2,000-op tail": {
+      "ms": {
+        "mean": 110.01980039999907,
+        "ci95": 16.067560499486945
+      },
+      "opsSentToClient": 6735,
+      "runs": [
+        {
+          "ms": 124.14366700000028,
+          "ops": 6735,
+          "shapes": 2000
+        },
+        {
+          "ms": 121.16608400000041,
+          "ops": 6735,
+          "shapes": 2000
+        },
+        {
+          "ms": 92.33570899999904,
+          "ops": 6735,
+          "shapes": 2000
+        },
+        {
+          "ms": 107.42545899999823,
+          "ops": 6735,
+          "shapes": 2000
+        },
+        {
+          "ms": 105.02808299999742,
+          "ops": 6735,
+          "shapes": 2000
+        }
+      ]
+    }
+  }
+}

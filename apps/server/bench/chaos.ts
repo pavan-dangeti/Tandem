@@ -2,10 +2,8 @@
 // the link (latency, bandwidth, hard cut) and then heal it. After healing,
 // every replica must converge and no acknowledged edit may be missing.
 //
-//   docker compose --profile chaos up -d
-//   TEST_DATABASE_URL=postgres://tandem:tandem@localhost:5434/tandem \
-//   TOXIPROXY_URL=http://127.0.0.1:8474 PROXY_PORT=8666 \
-//   pnpm --filter @tandem/server chaos
+//   docker compose --profile chaos up -d --wait toxiproxy
+//   TOXIPROXY_URL=http://127.0.0.1:8474 PROXY_PORT=8666 pnpm --filter @tandem/server chaos
 import fs from "node:fs";
 import WebSocket from "ws";
 import { Doc } from "@tandem/crdt";
@@ -34,8 +32,12 @@ async function api(
 ): Promise<void> {
   const res = await fetch(`${TOXI}${path}`, {
     method,
-    headers: body ? { "content-type": "application/json" } : {},
-    body: body ? JSON.stringify(body) : undefined,
+    ...(body
+      ? {
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }
+      : {}),
   });
   if (!res.ok && res.status !== 404)
     throw new Error(`toxiproxy ${method} ${path} -> ${res.status}`);
@@ -85,10 +87,15 @@ async function waitFor(
 }
 
 async function main(): Promise<void> {
+  const store = new MemoryOpStore();
   const srv: RunningServer = await startServer({
-    port: 8080,
+    port: 0,
     metaStore: new MemoryMetaStore(),
-    store: new MemoryOpStore(),
+    store,
+  });
+  // any free port: point the proxy at wherever the server landed
+  await api(`/proxies/${PROXY}`, "POST", {
+    upstream: `host.docker.internal:${srv.port}`,
   });
   const suffix = Date.now();
   const reg = async (
@@ -140,7 +147,7 @@ async function main(): Promise<void> {
       color: "#3355ff",
       // every client goes through the proxy: this is the link we will break
       url: `ws://127.0.0.1:${PROXY_PORT}/ws`,
-      socketFactory: (u) => new WebSocket(u) as unknown as WebSocket,
+      socketFactory: (u) => new WebSocket(u) as unknown as globalThis.WebSocket,
     });
     docs.push(doc);
     clients.push(client);
@@ -181,18 +188,21 @@ async function main(): Promise<void> {
       30_000,
       `${name}: convergence`,
     );
+    // Lost = an edit some client made that never reached the durable log.
+    // Replicas need not hold every op: superseded writes are not re-sent on
+    // resync, and identical visible state is checked above.
+    const durable = new Set(
+      (await store.loadOps(boardId)).map((r) => `${r.actor}:${r.seq}`),
+    );
     phases.push({
       name,
       detail,
       converged: docs.every((d) => canon(d) === canon(docs[0]!)),
-      lostOps: docs[0]!.opList.filter(
-        (op) =>
-          !docs
-            .slice(1)
-            .every((d) =>
-              d.opList.some((o) => o.actor === op.actor && o.seq === op.seq),
-            ),
-      ).length,
+      lostOps: clients
+        .flatMap((c, i) =>
+          docs[i]!.opList.filter((op) => op.actor === c.userId),
+        )
+        .filter((op) => !durable.has(`${op.actor}:${op.seq}`)).length,
     });
     console.log(
       `${name}: converged=${phases[phases.length - 1]!.converged} lostOps=${phases[phases.length - 1]!.lostOps}`,

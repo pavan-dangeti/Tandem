@@ -1,364 +1,319 @@
+// Benchmarks this CRDT against Yjs and Automerge on two workloads:
+//   text       — the automerge-perf editing trace (259,778 single-character
+//                edits that wrote an academic paper), github.com/automerge/automerge-perf
+//   whiteboard — 100,000 seeded create/move/delete operations on shapes
+// Every engine x workload x repeat runs in a fresh process: Automerge's WASM
+// memory never shrinks, and a fresh process keeps JIT state from leaking
+// between engines. Writes results/bench.json.
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import { performance } from "node:perf_hooks";
-import { Doc } from "../src/index.js";
-import type { Op } from "../src/index.js";
-import { encodeOp } from "../src/index.js";
-import * as Y from "yjs";
+import { fileURLToPath } from "node:url";
 import * as A from "@automerge/automerge";
+import * as Y from "yjs";
+import { Doc, encodeOp, type Op } from "../src/index.js";
 
-const WOB_OPS = 100_000;
+const RUNS = Number(process.env.BENCH_RUNS ?? 5);
+const WHITEBOARD_OPS = 100_000;
+const WHITEBOARD_SEED = 0x9e3779b9;
+const ENGINES = ["tandem", "yjs", "automerge"] as const;
+const WORKLOADS = ["text", "whiteboard"] as const;
+type Engine = (typeof ENGINES)[number];
+type Workload = (typeof WORKLOADS)[number];
 
-interface OpStream {
-  edits: [number, number, string][];
-  finalText: string;
+interface Sample {
+  authorMs: number;
+  mergeMs: number;
+  memoryMB: number;
+  bytes: number;
 }
 
-function loadTrace(): OpStream {
+// Heap plus external memory after a full GC; external includes WASM memory.
+function liveMB(): number {
+  globalThis.gc!();
+  const m = process.memoryUsage();
+  return (m.heapUsed + m.external) / 2 ** 20;
+}
+
+function timed<T>(f: () => T): [T, number] {
+  const t0 = performance.now();
+  const out = f();
+  return [out, performance.now() - t0];
+}
+
+function loadTrace(): {
+  edits: [number, number, string?][];
+  finalText: string;
+} {
   const src = fs.readFileSync(
     new URL("./editing-trace.js", import.meta.url),
     "utf8",
   );
-  const moduleShim = { exports: {} as OpStream };
-  new Function("module", "exports", src)(moduleShim, moduleShim);
-  return moduleShim.exports;
+  const mod = {
+    exports: {} as { edits: [number, number, string?][]; finalText: string },
+  };
+  new Function("module", "exports", src)(mod, mod.exports);
+  return mod.exports;
 }
 
-function memoryMB(): number {
-  return Math.round(process.memoryUsage().rss / 1024 / 1024);
-}
+type ShapeOp =
+  | { kind: "create"; id: string }
+  | { kind: "move"; id: string; x: number }
+  | { kind: "delete"; id: string };
 
-function now(): number {
-  return performance.now();
-}
-
-async function benchText(): Promise<Record<string, unknown>> {
-  const { edits: allEdits, finalText } = loadTrace();
-  const edits = allEdits.slice(
-    0,
-    Number(process.env.WOB_TRACE ?? allEdits.length),
-  );
-  const fullText = edits.length === allEdits.length ? finalText : undefined;
-  // tandem CRDT
-  {
-    const doc = new Doc("u1");
-    const ops: Op[] = [];
-    ops.push(
-      ...doc.applyLocal([
-        { t: "putObject", objId: "u1:1", type: "text" },
-        { t: "zInsert", objId: "u1:1", parent: null },
-      ]),
-    );
-    const positions: {
-      id: { actor: string; counter: number };
-      alive: boolean;
-    }[] = [];
-    let textCounter = 1;
-    const m0 = memoryMB();
-    const t0 = now();
-    for (const [index, delCount, insertedRaw] of edits) {
-      const inserted = insertedRaw ?? "";
-      for (let d = 0; d < delCount; d++) {
-        const p = positions[index]!;
-        ops.push(
-          ...doc.applyLocal([{ t: "textRemove", objId: "u1:1", id: p.id }]),
-        );
-        p.alive = false;
-        positions.splice(index, 1);
-      }
-      for (let i = 0; i < inserted.length; i++) {
-        const id = { actor: "u1", counter: textCounter++ };
-        const parent = index + i > 0 ? positions[index + i - 1]!.id : null;
-        ops.push(
-          ...doc.applyLocal([
-            { t: "textInsert", objId: "u1:1", id, parent, ch: inserted[i]! },
-          ]),
-        );
-        positions.splice(index + i, 0, { id, alive: true });
-      }
-    }
-    const tandemAuthor = now() - t0;
-    const m1 = memoryMB();
-    console.log("tandem author done ms", now() - t0);
-    const final = doc.text("u1:1");
-    if (fullText !== undefined && final !== fullText)
-      throw new Error(
-        `tandem final mismatch: ${final.length} vs ${fullText.length}`,
-      );
-    const bytes = ops.reduce((n, o) => n + encodeOp(o).length, 0);
-    const doc2 = new Doc("u2");
-    const mt0 = now();
-    doc2.merge(ops);
-    const tandemMerge = now() - mt0;
-    // save to temp for reuse in JSON write
-    lastText["tandem"] = {
-      authorMs: tandemAuthor,
-      mergeMs: tandemMerge,
-      memAfterMB: m1 - m0,
-      bytes,
-      ops: ops.length,
-      finalLength: final.length,
-    };
-  }
-  // Yjs
-  {
-    const doc = new Y.Doc();
-    const t = doc.getText("text");
-    const m0 = memoryMB();
-    const t0 = now();
-    for (const [index, delCount, inserted] of edits) {
-      if (delCount > 0) t.delete(index, delCount);
-      const ins0 = inserted ?? "";
-      if (ins0.length > 0) t.insert(index, ins0);
-    }
-    const author = now() - t0;
-    console.log("stage done ms", author);
-    const m1 = memoryMB();
-    if (fullText !== undefined && t.toString() !== fullText)
-      throw new Error("yjs final mismatch");
-    const bytes = Y.encodeStateAsUpdate(doc).byteLength;
-    const doc2 = new Y.Doc();
-    const mt0 = now();
-    Y.applyUpdate(doc2, Y.encodeStateAsUpdate(doc));
-    const merge = now() - mt0;
-    lastText["yjs"] = {
-      authorMs: author,
-      mergeMs: merge,
-      memAfterMB: m1 - m0,
-      bytes,
-      ops: edits.length,
-      finalLength: fullText?.length ?? 0,
-    };
-  }
-  // Automerge
-  {
-    let doc = A.init<{ text: string }>();
-    doc = A.change(doc, (d) => {
-      d.text = "";
-    });
-    const m0 = memoryMB();
-    const t0 = now();
-    for (const [index, delCount, inserted] of edits) {
-      const ins = inserted ?? "";
-      doc = A.change(doc, (d) => {
-        if (delCount > 0) A.splice(d, ["text"], index, delCount);
-        if (ins.length > 0) A.splice(d, ["text"], index, 0, ins);
-      });
-    }
-    const author = now() - t0;
-    console.log("stage done ms", author);
-    const m1 = memoryMB();
-    if (fullText !== undefined && doc.text !== fullText)
-      throw new Error("automerge final mismatch");
-    const bytes = A.save(doc).byteLength;
-    const mt0 = now();
-    A.load<typeof doc>(A.save(doc)); /* merge proxy */
-    const merge = now() - mt0;
-    lastText["automerge"] = {
-      authorMs: author,
-      mergeMs: merge,
-      memAfterMB: m1 - m0,
-      bytes,
-      ops: edits.length,
-      finalLength: fullText?.length ?? 0,
-    };
-  }
-  const editsCount = edits.length;
-  return { editsCount, ...lastText };
-}
-
-const lastText: Record<string, unknown> = {};
-
-function wobOps(): {
-  actor: string;
-  kind: string;
-  objId?: string;
-  key?: string;
-  value?: number;
-}[] {
-  let s = 0x9e3779b9;
+function whiteboardOps(): ShapeOp[] {
+  let s = WHITEBOARD_SEED;
   const rand = (): number => {
     s ^= s << 13;
     s ^= s >>> 17;
     s ^= s << 5;
     return (s >>> 0) / 0xffffffff;
   };
-  const out: {
-    actor: string;
-    kind: string;
-    objId?: string;
-    key?: string;
-    value?: number;
-  }[] = [];
+  const out: ShapeOp[] = [];
   let n = 0;
-  for (let i = 0; i < WOB_OPS; i++) {
+  const pick = (): string => `u1:${(1 + rand() * n) | 0}`;
+  for (let i = 0; i < WHITEBOARD_OPS; i++) {
     const r = rand();
-    if (r < 0.125 && n > 10) {
-      out.push({
-        actor: "u1",
-        kind: "delete",
-        objId: `u1:${(1 + rand() * n) | 0}`,
-      });
-    } else if (r < 0.25) {
-      n++;
-      out.push({ actor: "u1", kind: "create", objId: `u1:${n}` });
-    } else {
-      out.push({
-        actor: "u1",
-        kind: "move",
-        objId: `u1:${(1 + rand() * n) | 0}`,
-        value: rand(),
-      });
-    }
+    if (r < 0.125 && n > 10) out.push({ kind: "delete", id: pick() });
+    else if (r < 0.25) out.push({ kind: "create", id: `u1:${++n}` });
+    else out.push({ kind: "move", id: pick(), x: rand() });
   }
   return out;
 }
 
-async function benchWhiteboard(): Promise<Record<string, unknown>> {
-  const stream = wobOps();
-  // tandem
-  {
-    const doc = new Doc("u1");
-    const ops: Op[] = [];
-    const m0 = memoryMB();
-    const t0 = now();
-    for (const s of stream) {
-      if (s.kind === "create")
-        ops.push(
-          ...doc.applyLocal([
-            { t: "putObject", objId: s.objId!, type: "rect" },
-            { t: "zInsert", objId: s.objId!, parent: null },
-          ]),
-        );
-      else if (s.kind === "move")
-        ops.push(
-          ...doc.applyLocal([
-            {
-              t: "putProp",
-              objId: s.objId!,
-              key: "x",
-              value: { kind: "double", v: s.value! },
-            },
-          ]),
-        );
-      else
-        ops.push(...doc.applyLocal([{ t: "deleteObject", objId: s.objId! }]));
-    }
-    const author = now() - t0;
-    console.log("stage done ms", author);
-    const m1 = memoryMB();
-    const bytes = ops.reduce((n, o) => n + encodeOp(o).length, 0);
-    const doc2 = new Doc("u2");
-    const mt0 = now();
-    doc2.merge(ops);
-    const merge = now() - mt0;
-    lastWob["tandem"] = {
-      authorMs: author,
-      mergeMs: merge,
-      memAfterMB: m1 - m0,
-      bytes,
-      ops: ops.length,
-    };
-  }
-  // Yjs
-  {
-    const doc = new Y.Doc();
-    const objs = doc.getMap("objects");
-    let n = 0;
-    const m0 = memoryMB();
-    const t0 = now();
-    for (const s of stream) {
-      if (s.kind === "create") {
-        n++;
-        objs.set(`u1:${n}`, { type: "rect", x: 0 });
-      } else if (s.kind === "move") {
-        const cur = objs.get(s.objId!) as object | undefined;
-        if (cur) objs.set(s.objId!, { ...cur, x: s.value! });
-      } else {
-        objs.delete(s.objId!);
+// "merge" = bring an empty replica up to date with the authored document.
+// Bytes: Yjs and Automerge encode the whole document; tandem has no document
+// encoding, so it is the sum of its per-op wire encodings (what sync sends).
+function tandemText(): Sample {
+  const { edits, finalText } = loadTrace();
+  const doc = new Doc("u1");
+  const m0 = liveMB();
+  const [, authorMs] = timed(() => {
+    doc.applyLocal([
+      { t: "putObject", objId: "t", type: "text" },
+      { t: "zInsert", objId: "t", parent: null },
+    ]);
+    const ids: { actor: string; counter: number }[] = [];
+    let counter = 1;
+    for (const [index, del, ins = ""] of edits) {
+      for (let d = 0; d < del; d++)
+        doc.applyLocal([{ t: "textRemove", objId: "t", id: ids[index + d]! }]);
+      ids.splice(index, del);
+      for (let i = 0; i < ins.length; i++) {
+        const id = { actor: "u1", counter: counter++ };
+        const parent = index + i > 0 ? ids[index + i - 1]! : null;
+        doc.applyLocal([
+          { t: "textInsert", objId: "t", id, parent, ch: ins[i]! },
+        ]);
+        ids.splice(index + i, 0, id);
       }
     }
-    const author = now() - t0;
-    console.log("stage done ms", author);
-    const m1 = memoryMB();
-    const bytes = Y.encodeStateAsUpdate(doc).byteLength;
-    const doc2 = new Y.Doc();
-    const mt0 = now();
-    Y.applyUpdate(doc2, Y.encodeStateAsUpdate(doc));
-    const merge = now() - mt0;
-    lastWob["yjs"] = {
-      authorMs: author,
-      mergeMs: merge,
-      memAfterMB: m1 - m0,
-      bytes,
-      ops: stream.length,
-    };
-  }
-  // Automerge
-  {
-    let doc = A.init<{
-      objects: Record<string, { type: string; x: number }>;
-    }>();
-    doc = A.change(doc, (d) => {
-      d.objects = {};
-    });
-    let n = 0;
-    const m0 = memoryMB();
-    const t0 = now();
-    for (const s of stream) {
-      doc = A.change(doc, (d) => {
-        if (s.kind === "create")
-          d.objects[`u1:${++n}`] = { type: "rect", x: 0 };
-        else if (s.kind === "move") {
-          const o = d.objects[s.objId!];
-          if (o) o.x = s.value!;
-        } else Reflect.deleteProperty(d.objects, s.objId!);
-      });
-    }
-    const author = now() - t0;
-    console.log("stage done ms", author);
-    const m1 = memoryMB();
-    const bytes = A.save(doc).byteLength;
-    const mt0 = now();
-    A.load<typeof doc>(A.save(doc)); /* merge proxy */
-    const merge = now() - mt0;
-    lastWob["automerge"] = {
-      authorMs: author,
-      mergeMs: merge,
-      memAfterMB: m1 - m0,
-      bytes,
-      ops: stream.length,
-    };
-  }
-  return { opsCount: stream.length, ...lastWob };
+  });
+  const memoryMB = liveMB() - m0;
+  if (doc.text("t") !== finalText) throw new Error("tandem: wrong final text");
+  const ops: Op[] = doc.opList;
+  const bytes = ops.reduce((n, o) => n + encodeOp(o).length, 0);
+  const [, mergeMs] = timed(() => new Doc("u2").merge(ops));
+  return { authorMs, mergeMs, memoryMB, bytes };
 }
 
-const lastWob: Record<string, unknown> = {};
+function yjsText(): Sample {
+  const { edits, finalText } = loadTrace();
+  const doc = new Y.Doc();
+  const text = doc.getText("t");
+  const m0 = liveMB();
+  const [, authorMs] = timed(() => {
+    for (const [index, del, ins = ""] of edits) {
+      if (del > 0) text.delete(index, del);
+      if (ins) text.insert(index, ins);
+    }
+  });
+  const memoryMB = liveMB() - m0;
+  if (text.toString() !== finalText) throw new Error("yjs: wrong final text");
+  const update = Y.encodeStateAsUpdate(doc);
+  const [, mergeMs] = timed(() => Y.applyUpdate(new Y.Doc(), update));
+  return { authorMs, mergeMs, memoryMB, bytes: update.byteLength };
+}
 
-async function main(): Promise<void> {
-  console.log("text trace...");
-  const text = await benchText();
-  console.log(JSON.stringify(text, null, 2));
-  console.log("whiteboard...");
-  const wob = await benchWhiteboard();
-  console.log(JSON.stringify(wob, null, 2));
+function automergeText(): Sample {
+  const { edits, finalText } = loadTrace();
+  let doc = A.from<{ t: string }>({ t: "" });
+  const m0 = liveMB();
+  const [, authorMs] = timed(() => {
+    for (const [index, del, ins = ""] of edits)
+      doc = A.change(doc, (d) => A.splice(d, ["t"], index, del, ins));
+  });
+  const memoryMB = liveMB() - m0;
+  if (doc.t !== finalText) throw new Error("automerge: wrong final text");
+  const saved = A.save(doc);
+  const [, mergeMs] = timed(() => A.load(saved));
+  return { authorMs, mergeMs, memoryMB, bytes: saved.byteLength };
+}
+
+function tandemWhiteboard(): Sample {
+  const stream = whiteboardOps();
+  const doc = new Doc("u1");
+  const m0 = liveMB();
+  const [, authorMs] = timed(() => {
+    for (const op of stream) {
+      if (op.kind === "create")
+        doc.applyLocal([
+          { t: "putObject", objId: op.id, type: "rect" },
+          { t: "zInsert", objId: op.id, parent: null },
+        ]);
+      else if (op.kind === "move")
+        doc.applyLocal([
+          {
+            t: "putProp",
+            objId: op.id,
+            key: "x",
+            value: { kind: "double", v: op.x },
+          },
+        ]);
+      else doc.applyLocal([{ t: "deleteObject", objId: op.id }]);
+    }
+  });
+  const memoryMB = liveMB() - m0;
+  const ops = doc.opList;
+  const bytes = ops.reduce((n, o) => n + encodeOp(o).length, 0);
+  const [, mergeMs] = timed(() => new Doc("u2").merge(ops));
+  return { authorMs, mergeMs, memoryMB, bytes };
+}
+
+// Each shape is a nested map, so a move updates one property, as in tandem.
+function yjsWhiteboard(): Sample {
+  const stream = whiteboardOps();
+  const doc = new Y.Doc();
+  const shapes = doc.getMap<Y.Map<unknown>>("shapes");
+  const m0 = liveMB();
+  const [, authorMs] = timed(() => {
+    for (const op of stream) {
+      if (op.kind === "create") {
+        const shape = new Y.Map<unknown>();
+        shapes.set(op.id, shape);
+        shape.set("type", "rect");
+      } else if (op.kind === "move") shapes.get(op.id)?.set("x", op.x);
+      else shapes.delete(op.id);
+    }
+  });
+  const memoryMB = liveMB() - m0;
+  const update = Y.encodeStateAsUpdate(doc);
+  const [, mergeMs] = timed(() => Y.applyUpdate(new Y.Doc(), update));
+  return { authorMs, mergeMs, memoryMB, bytes: update.byteLength };
+}
+
+function automergeWhiteboard(): Sample {
+  const stream = whiteboardOps();
+  let doc = A.from<{ shapes: Record<string, { type: string; x?: number }> }>({
+    shapes: {},
+  });
+  const m0 = liveMB();
+  const [, authorMs] = timed(() => {
+    for (const op of stream)
+      doc = A.change(doc, (d) => {
+        if (op.kind === "create") d.shapes[op.id] = { type: "rect" };
+        else if (op.kind === "move") {
+          const s = d.shapes[op.id];
+          if (s) s.x = op.x;
+        } else Reflect.deleteProperty(d.shapes, op.id);
+      });
+  });
+  const memoryMB = liveMB() - m0;
+  const saved = A.save(doc);
+  const [, mergeMs] = timed(() => A.load(saved));
+  return { authorMs, mergeMs, memoryMB, bytes: saved.byteLength };
+}
+
+const RUNNERS: Record<Workload, Record<Engine, () => Sample>> = {
+  text: { tandem: tandemText, yjs: yjsText, automerge: automergeText },
+  whiteboard: {
+    tandem: tandemWhiteboard,
+    yjs: yjsWhiteboard,
+    automerge: automergeWhiteboard,
+  },
+};
+
+// Two-sided 95% Student t critical values, indexed by degrees of freedom.
+const T95 = [NaN, 12.71, 4.3, 3.18, 2.78, 2.57, 2.45, 2.36, 2.31, 2.26];
+
+function summarize(xs: number[]): { mean: number; ci95: number } {
+  const n = xs.length;
+  const mean = xs.reduce((a, b) => a + b, 0) / n;
+  if (n < 2) return { mean, ci95: NaN };
+  const sd = Math.sqrt(xs.reduce((a, x) => a + (x - mean) ** 2, 0) / (n - 1));
+  return { mean, ci95: ((T95[n - 1] ?? 1.96) * sd) / Math.sqrt(n) };
+}
+
+// Read from node_modules: Automerge's "exports" map does not expose package.json.
+function version(pkg: string): string {
+  const file = new URL(`../node_modules/${pkg}/package.json`, import.meta.url);
+  return (JSON.parse(fs.readFileSync(file, "utf8")) as { version: string })
+    .version;
+}
+
+function child(workload: Workload, engine: Engine): Sample {
+  const r = spawnSync(
+    process.execPath,
+    [
+      ...process.execArgv,
+      "--expose-gc",
+      "--max-old-space-size=8192",
+      fileURLToPath(import.meta.url),
+      workload,
+      engine,
+    ],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
+  );
+  if (r.status !== 0) throw new Error(`${workload}/${engine} failed`);
+  return JSON.parse(r.stdout) as Sample;
+}
+
+function main(): void {
+  const versions = {
+    yjs: version("yjs"),
+    automerge: version("@automerge/automerge"),
+  };
+  const results: Record<string, Record<string, unknown>> = {};
+  for (const workload of WORKLOADS) {
+    const byEngine: Record<string, unknown> = {};
+    for (const engine of ENGINES) {
+      const samples: Sample[] = [];
+      for (let i = 0; i < RUNS; i++) samples.push(child(workload, engine));
+      const stat = (k: keyof Sample) => summarize(samples.map((s) => s[k]));
+      byEngine[engine] = {
+        authorMs: stat("authorMs"),
+        mergeMs: stat("mergeMs"),
+        memoryMB: stat("memoryMB"),
+        bytes: samples[0]!.bytes,
+        samples,
+      };
+      console.error(
+        `${workload}/${engine}: author ${stat("authorMs").mean.toFixed(0)} ms`,
+      );
+    }
+    results[workload] = byEngine;
+  }
   const out = {
     date: new Date().toISOString(),
-    hardware: `${os.cpus()[0]?.model} x${os.cpus().length}, ${Math.round(os.totalmem() / 1024 ** 3)}GB RAM, node ${process.version}`,
-    text,
-    whiteboard: wob,
+    hardware: `${os.cpus()[0]?.model} x${os.cpus().length}, ${Math.round(os.totalmem() / 2 ** 30)}GB RAM, ${os.platform()} ${os.release()}, node ${process.version}`,
+    versions,
+    runs: RUNS,
+    whiteboard: { ops: WHITEBOARD_OPS, seed: WHITEBOARD_SEED },
+    text: {
+      trace: "automerge-perf paper trace",
+      edits: loadTrace().edits.length,
+    },
+    results,
   };
-  fs.mkdirSync(new URL("../../../results", import.meta.url), {
-    recursive: true,
-  });
   fs.writeFileSync(
     new URL("../../../results/bench.json", import.meta.url),
     JSON.stringify(out, null, 2) + "\n",
   );
-  console.log("wrote results/bench.json");
+  console.error("wrote results/bench.json");
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+const [workload, engine] = process.argv.slice(2) as [Workload?, Engine?];
+if (workload && engine)
+  process.stdout.write(JSON.stringify(RUNNERS[workload][engine]()));
+else main();

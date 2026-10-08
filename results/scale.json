@@ -1,121 +1,758 @@
 {
-  "date": "2026-10-07T16:56:53.796Z",
-  "hardware": "Apple M5 x10, 16GB RAM, node v22.23.2",
-  "sloNote": "target: p95 < 300ms for 50 editors on one board",
+  "date": "2026-10-08T15:16:40.715Z",
+  "hardware": "Apple M5 x10, 16GB RAM, darwin 25.6.0, node v22.23.2",
+  "method": "sustained load; server nodes and editor workers are separate processes on one machine; Postgres and Redis in Docker on the same machine",
+  "config": {
+    "nodes": 2,
+    "editsPerSecPerEditor": 2,
+    "durationSeconds": 10,
+    "workers": 6,
+    "repeats": 3
+  },
+  "slo": {
+    "p95Ms": 300,
+    "editorsPerBoard": 50
+  },
   "points": [
     {
-      "date": "2026-10-07T16:55:35.341Z",
-      "hardware": "Apple M5 x10, 16GB RAM, node v22.23.2",
-      "config": {
-        "nodes": 2,
-        "editors": 20,
-        "editsPerEditor": 40,
-        "database": "postgres"
-      },
-      "fanout": {
-        "samples": 800,
-        "p50": 9.472625000000335,
-        "p95": 11.765083000000232,
-        "p99": 12.009291999999732,
-        "max": 12.033499999999549
-      },
-      "throughputOpsPerSec": 51561,
-      "elapsedMs": 16
+      "boards": 1,
+      "editorsPerBoard": 20,
+      "p50": 5.289794921875,
+      "p95": 8.99267578125,
+      "p95Range": [
+        8.526611328125,
+        9.2587890625
+      ],
+      "p99": 10.772705078125,
+      "incomplete": 0,
+      "runs": [
+        {
+          "edits": 400,
+          "incomplete": 0,
+          "p50": 5.289794921875,
+          "p95": 8.99267578125,
+          "p99": 10.772705078125,
+          "max": 15.169677734375,
+          "editsPerSec": 40,
+          "workerCpuPercent": 2,
+          "nodes": [
+            {
+              "cpuPercent": 5,
+              "rssMB": 104
+            },
+            {
+              "cpuPercent": 5,
+              "rssMB": 109
+            }
+          ]
+        },
+        {
+          "edits": 399,
+          "incomplete": 0,
+          "p50": 5.800048828125,
+          "p95": 9.2587890625,
+          "p99": 13.119140625,
+          "max": 18.776123046875,
+          "editsPerSec": 40,
+          "workerCpuPercent": 2,
+          "nodes": [
+            {
+              "cpuPercent": 7,
+              "rssMB": 90
+            },
+            {
+              "cpuPercent": 7,
+              "rssMB": 90
+            }
+          ]
+        },
+        {
+          "edits": 400,
+          "incomplete": 0,
+          "p50": 4.847900390625,
+          "p95": 8.526611328125,
+          "p99": 9.395751953125,
+          "max": 12.523681640625,
+          "editsPerSec": 40,
+          "workerCpuPercent": 2,
+          "nodes": [
+            {
+              "cpuPercent": 5,
+              "rssMB": 137
+            },
+            {
+              "cpuPercent": 5,
+              "rssMB": 137
+            }
+          ]
+        }
+      ]
     },
     {
-      "date": "2026-10-07T16:55:43.397Z",
-      "hardware": "Apple M5 x10, 16GB RAM, node v22.23.2",
-      "config": {
-        "nodes": 2,
-        "editors": 50,
-        "editsPerEditor": 40,
-        "database": "postgres"
-      },
-      "fanout": {
-        "samples": 2000,
-        "p50": 31.066249999999854,
-        "p95": 47.014375000000655,
-        "p99": 49.30766699999913,
-        "max": 49.94524999999885
-      },
-      "throughputOpsPerSec": 32033,
-      "elapsedMs": 62
+      "boards": 1,
+      "editorsPerBoard": 50,
+      "p50": 3.591552734375,
+      "p95": 8.34716796875,
+      "p95Range": [
+        7.1591796875,
+        9.126220703125
+      ],
+      "p99": 16.241943359375,
+      "incomplete": 0,
+      "runs": [
+        {
+          "edits": 997,
+          "incomplete": 0,
+          "p50": 3.591552734375,
+          "p95": 7.1591796875,
+          "p99": 18.80517578125,
+          "max": 59.43505859375,
+          "editsPerSec": 100,
+          "workerCpuPercent": 4,
+          "nodes": [
+            {
+              "cpuPercent": 7,
+              "rssMB": 142
+            },
+            {
+              "cpuPercent": 9,
+              "rssMB": 96
+            }
+          ]
+        },
+        {
+          "edits": 997,
+          "incomplete": 0,
+          "p50": 3.288330078125,
+          "p95": 9.126220703125,
+          "p99": 14.0869140625,
+          "max": 22.10693359375,
+          "editsPerSec": 100,
+          "workerCpuPercent": 3,
+          "nodes": [
+            {
+              "cpuPercent": 6,
+              "rssMB": 87
+            },
+            {
+              "cpuPercent": 7,
+              "rssMB": 84
+            }
+          ]
+        },
+        {
+          "edits": 998,
+          "incomplete": 0,
+          "p50": 3.972412109375,
+          "p95": 8.34716796875,
+          "p99": 16.241943359375,
+          "max": 19.234130859375,
+          "editsPerSec": 100,
+          "workerCpuPercent": 5,
+          "nodes": [
+            {
+              "cpuPercent": 9,
+              "rssMB": 143
+            },
+            {
+              "cpuPercent": 11,
+              "rssMB": 96
+            }
+          ]
+        }
+      ]
     },
     {
-      "date": "2026-10-07T16:55:56.396Z",
-      "hardware": "Apple M5 x10, 16GB RAM, node v22.23.2",
-      "config": {
-        "nodes": 2,
-        "editors": 100,
-        "editsPerEditor": 40,
-        "database": "postgres"
-      },
-      "fanout": {
-        "samples": 4000,
-        "p50": 54.42962500000067,
-        "p95": 129.94166699999914,
-        "p99": 139.30387500000143,
-        "max": 141.43095800000083
-      },
-      "throughputOpsPerSec": 27384,
-      "elapsedMs": 146
+      "boards": 1,
+      "editorsPerBoard": 100,
+      "p50": 6.005615234375,
+      "p95": 27.09814453125,
+      "p95Range": [
+        4.717529296875,
+        152.539306640625
+      ],
+      "p99": 43.032470703125,
+      "incomplete": 0,
+      "runs": [
+        {
+          "edits": 1993,
+          "incomplete": 0,
+          "p50": 6.005615234375,
+          "p95": 152.539306640625,
+          "p99": 258.834716796875,
+          "max": 377.30322265625,
+          "editsPerSec": 199,
+          "workerCpuPercent": 11,
+          "nodes": [
+            {
+              "cpuPercent": 21,
+              "rssMB": 120
+            },
+            {
+              "cpuPercent": 22,
+              "rssMB": 115
+            }
+          ]
+        },
+        {
+          "edits": 1996,
+          "incomplete": 0,
+          "p50": 2.93798828125,
+          "p95": 4.717529296875,
+          "p99": 6.312744140625,
+          "max": 14.7265625,
+          "editsPerSec": 200,
+          "workerCpuPercent": 7,
+          "nodes": [
+            {
+              "cpuPercent": 11,
+              "rssMB": 111
+            },
+            {
+              "cpuPercent": 10,
+              "rssMB": 148
+            }
+          ]
+        },
+        {
+          "edits": 1999,
+          "incomplete": 0,
+          "p50": 8.103759765625,
+          "p95": 27.09814453125,
+          "p99": 43.032470703125,
+          "max": 57.9248046875,
+          "editsPerSec": 200,
+          "workerCpuPercent": 12,
+          "nodes": [
+            {
+              "cpuPercent": 25,
+              "rssMB": 128
+            },
+            {
+              "cpuPercent": 24,
+              "rssMB": 147
+            }
+          ]
+        }
+      ]
     },
     {
-      "date": "2026-10-07T16:56:08.623Z",
-      "hardware": "Apple M5 x10, 16GB RAM, node v22.23.2",
-      "config": {
-        "nodes": 2,
-        "editors": 150,
-        "editsPerEditor": 40,
-        "database": "postgres"
-      },
-      "fanout": {
-        "samples": 6000,
-        "p50": 81.73254199999792,
-        "p95": 185.8312500000029,
-        "p99": 198.61799999999494,
-        "max": 201.8917500000025
-      },
-      "throughputOpsPerSec": 27345,
-      "elapsedMs": 219
+      "boards": 1,
+      "editorsPerBoard": 150,
+      "p50": 22.435546875,
+      "p95": 108.1328125,
+      "p95Range": [
+        18.9384765625,
+        123.1357421875
+      ],
+      "p99": 172.53515625,
+      "incomplete": 0,
+      "runs": [
+        {
+          "edits": 2997,
+          "incomplete": 0,
+          "p50": 7.1416015625,
+          "p95": 18.9384765625,
+          "p99": 41.25634765625,
+          "max": 92.445068359375,
+          "editsPerSec": 300,
+          "workerCpuPercent": 24,
+          "nodes": [
+            {
+              "cpuPercent": 36,
+              "rssMB": 115
+            },
+            {
+              "cpuPercent": 39,
+              "rssMB": 109
+            }
+          ]
+        },
+        {
+          "edits": 2988,
+          "incomplete": 0,
+          "p50": 22.435546875,
+          "p95": 108.1328125,
+          "p99": 172.53515625,
+          "max": 242.680908203125,
+          "editsPerSec": 299,
+          "workerCpuPercent": 24,
+          "nodes": [
+            {
+              "cpuPercent": 39,
+              "rssMB": 110
+            },
+            {
+              "cpuPercent": 40,
+              "rssMB": 118
+            }
+          ]
+        },
+        {
+          "edits": 2992,
+          "incomplete": 0,
+          "p50": 25.717529296875,
+          "p95": 123.1357421875,
+          "p99": 175.826416015625,
+          "max": 210.903564453125,
+          "editsPerSec": 299,
+          "workerCpuPercent": 23,
+          "nodes": [
+            {
+              "cpuPercent": 38,
+              "rssMB": 112
+            },
+            {
+              "cpuPercent": 41,
+              "rssMB": 108
+            }
+          ]
+        }
+      ]
     },
     {
-      "date": "2026-10-07T16:56:28.349Z",
-      "hardware": "Apple M5 x10, 16GB RAM, node v22.23.2",
-      "config": {
-        "nodes": 2,
-        "editors": 200,
-        "editsPerEditor": 40,
-        "database": "postgres"
-      },
-      "fanout": {
-        "samples": 8000,
-        "p50": 198.67420799999672,
-        "p95": 571.049583,
-        "p99": 617.8286250000019,
-        "max": 628.8862500000032
-      },
-      "throughputOpsPerSec": 12234,
-      "elapsedMs": 654
+      "boards": 1,
+      "editorsPerBoard": 200,
+      "p50": 893.561279296875,
+      "p95": 2228.2158203125,
+      "p95Range": [
+        115.341064453125,
+        4973.9423828125
+      ],
+      "p99": 2449.994140625,
+      "incomplete": 186,
+      "runs": [
+        {
+          "edits": 3998,
+          "incomplete": 0,
+          "p50": 22.8310546875,
+          "p95": 115.341064453125,
+          "p99": 202.6064453125,
+          "max": 301.48974609375,
+          "editsPerSec": 400,
+          "workerCpuPercent": 39,
+          "nodes": [
+            {
+              "cpuPercent": 62,
+              "rssMB": 124
+            },
+            {
+              "cpuPercent": 65,
+              "rssMB": 119
+            }
+          ]
+        },
+        {
+          "edits": 3964,
+          "incomplete": 0,
+          "p50": 1431.459716796875,
+          "p95": 4973.9423828125,
+          "p99": 6684.7080078125,
+          "max": 7138.844970703125,
+          "editsPerSec": 396,
+          "workerCpuPercent": 28,
+          "nodes": [
+            {
+              "cpuPercent": 49,
+              "rssMB": 104
+            },
+            {
+              "cpuPercent": 48,
+              "rssMB": 111
+            }
+          ]
+        },
+        {
+          "edits": 3972,
+          "incomplete": 186,
+          "p50": 893.561279296875,
+          "p95": 2228.2158203125,
+          "p99": 2449.994140625,
+          "max": 2487.9169921875,
+          "editsPerSec": 397,
+          "workerCpuPercent": 33,
+          "nodes": [
+            {
+              "cpuPercent": 58,
+              "rssMB": 149
+            },
+            {
+              "cpuPercent": 56,
+              "rssMB": 128
+            }
+          ]
+        }
+      ]
     },
     {
-      "date": "2026-10-07T16:56:53.281Z",
-      "hardware": "Apple M5 x10, 16GB RAM, node v22.23.2",
-      "config": {
-        "nodes": 2,
-        "editors": 300,
-        "editsPerEditor": 40,
-        "database": "postgres"
-      },
-      "fanout": {
-        "samples": 12000,
-        "p50": 267.2515839999978,
-        "p95": 938.3577079999959,
-        "p99": 1038.7261670000007,
-        "max": 1064.4347090000083
-      },
-      "throughputOpsPerSec": 11034,
-      "elapsedMs": 1088
+      "boards": 1,
+      "editorsPerBoard": 225,
+      "p50": 966.60302734375,
+      "p95": 3059.193359375,
+      "p95Range": [
+        3041.568359375,
+        3524.241943359375
+      ],
+      "p99": 3268.8046875,
+      "incomplete": 2341,
+      "runs": [
+        {
+          "edits": 4489,
+          "incomplete": 942,
+          "p50": 2412.670654296875,
+          "p95": 3524.241943359375,
+          "p99": 3721.897216796875,
+          "max": 3889.695556640625,
+          "editsPerSec": 449,
+          "workerCpuPercent": 35,
+          "nodes": [
+            {
+              "cpuPercent": 51,
+              "rssMB": 137
+            },
+            {
+              "cpuPercent": 53,
+              "rssMB": 134
+            }
+          ]
+        },
+        {
+          "edits": 4476,
+          "incomplete": 471,
+          "p50": 761.656494140625,
+          "p95": 3041.568359375,
+          "p99": 3268.8046875,
+          "max": 3532.3037109375,
+          "editsPerSec": 448,
+          "workerCpuPercent": 36,
+          "nodes": [
+            {
+              "cpuPercent": 55,
+              "rssMB": 139
+            },
+            {
+              "cpuPercent": 61,
+              "rssMB": 137
+            }
+          ]
+        },
+        {
+          "edits": 4475,
+          "incomplete": 928,
+          "p50": 966.60302734375,
+          "p95": 3059.193359375,
+          "p99": 3174.352783203125,
+          "max": 3236.73974609375,
+          "editsPerSec": 448,
+          "workerCpuPercent": 30,
+          "nodes": [
+            {
+              "cpuPercent": 56,
+              "rssMB": 128
+            },
+            {
+              "cpuPercent": 56,
+              "rssMB": 119
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "boards": 1,
+      "editorsPerBoard": 250,
+      "p50": 3801.5732421875,
+      "p95": 4830.325439453125,
+      "p95Range": [
+        3784.852294921875,
+        6710.521240234375
+      ],
+      "p99": 5093.140869140625,
+      "incomplete": 4422,
+      "runs": [
+        {
+          "edits": 4989,
+          "incomplete": 1491,
+          "p50": 2077.886962890625,
+          "p95": 3784.852294921875,
+          "p99": 4028.72265625,
+          "max": 4189.365234375,
+          "editsPerSec": 499,
+          "workerCpuPercent": 34,
+          "nodes": [
+            {
+              "cpuPercent": 57,
+              "rssMB": 144
+            },
+            {
+              "cpuPercent": 62,
+              "rssMB": 138
+            }
+          ]
+        },
+        {
+          "edits": 4977,
+          "incomplete": 1482,
+          "p50": 4098.913818359375,
+          "p95": 6710.521240234375,
+          "p99": 6969.4013671875,
+          "max": 7110.43212890625,
+          "editsPerSec": 498,
+          "workerCpuPercent": 28,
+          "nodes": [
+            {
+              "cpuPercent": 42,
+              "rssMB": 104
+            },
+            {
+              "cpuPercent": 44,
+              "rssMB": 112
+            }
+          ]
+        },
+        {
+          "edits": 4946,
+          "incomplete": 1449,
+          "p50": 3801.5732421875,
+          "p95": 4830.325439453125,
+          "p99": 5093.140869140625,
+          "max": 5290.26220703125,
+          "editsPerSec": 495,
+          "workerCpuPercent": 30,
+          "nodes": [
+            {
+              "cpuPercent": 49,
+              "rssMB": 118
+            },
+            {
+              "cpuPercent": 50,
+              "rssMB": 116
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "boards": 1,
+      "editorsPerBoard": 275,
+      "p50": 1209.321044921875,
+      "p95": 7929.40966796875,
+      "p95Range": [
+        6071.84814453125,
+        9211.669921875
+      ],
+      "p99": 8441.13671875,
+      "incomplete": 0,
+      "runs": [
+        {
+          "edits": 5488,
+          "incomplete": 0,
+          "p50": 1300.523681640625,
+          "p95": 9211.669921875,
+          "p99": 9967.994140625,
+          "max": 10348.31982421875,
+          "editsPerSec": 549,
+          "workerCpuPercent": 42,
+          "nodes": [
+            {
+              "cpuPercent": 98,
+              "rssMB": 272
+            },
+            {
+              "cpuPercent": 106,
+              "rssMB": 262
+            }
+          ]
+        },
+        {
+          "edits": 5491,
+          "incomplete": 0,
+          "p50": 1209.321044921875,
+          "p95": 7929.40966796875,
+          "p99": 8441.13671875,
+          "max": 8698.817138671875,
+          "editsPerSec": 549,
+          "workerCpuPercent": 48,
+          "nodes": [
+            {
+              "cpuPercent": 108,
+              "rssMB": 289
+            },
+            {
+              "cpuPercent": 105,
+              "rssMB": 291
+            }
+          ]
+        },
+        {
+          "edits": 5484,
+          "incomplete": 0,
+          "p50": 615.768310546875,
+          "p95": 6071.84814453125,
+          "p99": 6760.512451171875,
+          "max": 7008.075927734375,
+          "editsPerSec": 548,
+          "workerCpuPercent": 61,
+          "nodes": [
+            {
+              "cpuPercent": 86,
+              "rssMB": 139
+            },
+            {
+              "cpuPercent": 102,
+              "rssMB": 222
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "boards": 1,
+      "editorsPerBoard": 300,
+      "p50": 1835.25244140625,
+      "p95": 3088.4794921875,
+      "p95Range": [
+        1955.267333984375,
+        6483.706787109375
+      ],
+      "p99": 3206.380859375,
+      "incomplete": 7231,
+      "runs": [
+        {
+          "edits": 5987,
+          "incomplete": 2589,
+          "p50": 1992.845458984375,
+          "p95": 3088.4794921875,
+          "p99": 3206.380859375,
+          "max": 3289.510009765625,
+          "editsPerSec": 599,
+          "workerCpuPercent": 45,
+          "nodes": [
+            {
+              "cpuPercent": 94,
+              "rssMB": 215
+            },
+            {
+              "cpuPercent": 94,
+              "rssMB": 226
+            }
+          ]
+        },
+        {
+          "edits": 5990,
+          "incomplete": 2592,
+          "p50": 908.564453125,
+          "p95": 1955.267333984375,
+          "p99": 2174.310302734375,
+          "max": 2273.421142578125,
+          "editsPerSec": 599,
+          "workerCpuPercent": 46,
+          "nodes": [
+            {
+              "cpuPercent": 104,
+              "rssMB": 274
+            },
+            {
+              "cpuPercent": 107,
+              "rssMB": 274
+            }
+          ]
+        },
+        {
+          "edits": 5988,
+          "incomplete": 2050,
+          "p50": 1835.25244140625,
+          "p95": 6483.706787109375,
+          "p99": 7424.140625,
+          "max": 7673.718017578125,
+          "editsPerSec": 599,
+          "workerCpuPercent": 47,
+          "nodes": [
+            {
+              "cpuPercent": 105,
+              "rssMB": 279
+            },
+            {
+              "cpuPercent": 105,
+              "rssMB": 265
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "boards": 25,
+      "editorsPerBoard": 8,
+      "p50": 2.7568359375,
+      "p95": 7.409912109375,
+      "p95Range": [
+        5.24462890625,
+        7.71826171875
+      ],
+      "p99": 9.7607421875,
+      "incomplete": 0,
+      "runs": [
+        {
+          "edits": 3995,
+          "incomplete": 0,
+          "p50": 2.750244140625,
+          "p95": 7.409912109375,
+          "p99": 9.7607421875,
+          "max": 20.798828125,
+          "editsPerSec": 400,
+          "workerCpuPercent": 5,
+          "nodes": [
+            {
+              "cpuPercent": 11,
+              "rssMB": 124
+            },
+            {
+              "cpuPercent": 11,
+              "rssMB": 146
+            }
+          ]
+        },
+        {
+          "edits": 3983,
+          "incomplete": 0,
+          "p50": 2.7568359375,
+          "p95": 5.24462890625,
+          "p99": 7.10888671875,
+          "max": 11.82080078125,
+          "editsPerSec": 398,
+          "workerCpuPercent": 4,
+          "nodes": [
+            {
+              "cpuPercent": 12,
+              "rssMB": 148
+            },
+            {
+              "cpuPercent": 12,
+              "rssMB": 144
+            }
+          ]
+        },
+        {
+          "edits": 3996,
+          "incomplete": 0,
+          "p50": 3.088623046875,
+          "p95": 7.71826171875,
+          "p99": 9.9697265625,
+          "max": 12.7431640625,
+          "editsPerSec": 400,
+          "workerCpuPercent": 6,
+          "nodes": [
+            {
+              "cpuPercent": 15,
+              "rssMB": 126
+            },
+            {
+              "cpuPercent": 17,
+              "rssMB": 116
+            }
+          ]
+        }
+      ]
     }
   ]
 }
