@@ -3,6 +3,7 @@ import {
   FRAME,
   MAX_FRAME,
   type Ack,
+  type ServerError,
   PROTOCOL_VERSION,
   buildFrame,
   packOps,
@@ -20,6 +21,8 @@ export interface SyncClientOptions {
   boardId: string;
   token: string;
   userId: string;
+  /** per-device actor suffix; see helloSchema.actor */
+  deviceId?: string;
   name: string;
   color: string;
   /** defaults to the page's own origin */
@@ -36,6 +39,17 @@ const BATCH_SIZE = 500;
 // batches unacknowledged and let the Acks drive the rest.
 const MAX_INFLIGHT = 4;
 
+// Errors that reconnecting cannot fix: bad credentials, no access to the board,
+// an unsupported protocol version, or a malformed hello.
+const FATAL_ERRORS = new Set([
+  "auth",
+  "forbidden",
+  "bad_hello",
+  "bad_board_id",
+  "hello_first",
+  "bad_frame",
+]);
+
 /**
  * Local-first sync client: every edit hits the local CRDT and the durable op log
  * immediately, then goes to the server. Reconnects replay whatever the server
@@ -46,6 +60,23 @@ export class SyncClient {
   private ws: WebSocket | null = null;
   private queue: Op[] = [];
   private retry = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  // A dropped network can leave a socket looking open until TCP gives up, so
+  // the browser's own connectivity events drive offline/online directly.
+  private readonly onOffline = (): void => {
+    const ws = this.ws;
+    if (!ws) return;
+    ws.onclose = null;
+    ws.close();
+    this.ws = null;
+    this.setStatus("offline");
+  };
+  private readonly onOnline = (): void => {
+    if (this.closed || this.ws) return;
+    clearTimeout(this.retryTimer);
+    this.retry = 0;
+    this.connect();
+  };
   private closed = false;
   private inFlight = 0;
   /** highest op seq of our own ops the server has acknowledged as durable */
@@ -53,6 +84,7 @@ export class SyncClient {
   private oplog: OpLog;
   private socketFactory: (url: string) => WebSocket;
   private url: string;
+  private opts: SyncClientOptions;
 
   status: ConnectionStatus = "connecting";
   presences = new Map<string, Presence>();
@@ -68,8 +100,6 @@ export class SyncClient {
     return this.opts.userId;
   }
 
-  private opts: SyncClientOptions;
-
   constructor(opts: SyncClientOptions) {
     this.opts = opts;
     this.oplog = opts.oplog ?? new OpLog();
@@ -82,6 +112,10 @@ export class SyncClient {
 
   async start(): Promise<void> {
     this.closed = false;
+    if (typeof window !== "undefined") {
+      window.addEventListener("offline", this.onOffline);
+      window.addEventListener("online", this.onOnline);
+    }
     await this.oplog.init();
     for (const op of await this.oplog.load(this.opts.boardId))
       this.opts.doc.applyRemote(op);
@@ -112,6 +146,7 @@ export class SyncClient {
               token: this.opts.token,
               boardId: this.opts.boardId,
               stateVector: Object.fromEntries(this.opts.doc.stateVector()),
+              actor: this.opts.deviceId,
             }),
           ),
         ),
@@ -128,6 +163,9 @@ export class SyncClient {
       this.onMessage(new Uint8Array(data as ArrayBuffer));
     };
     ws.onclose = () => {
+      // a socket replaced by a restart must not tear down its successor
+      if (this.ws !== ws) return;
+      this.ws = null;
       this.setStatus("offline");
       if (!this.closed) this.scheduleRetry();
     };
@@ -136,7 +174,7 @@ export class SyncClient {
 
   private scheduleRetry(): void {
     this.retry++;
-    setTimeout(
+    this.retryTimer = setTimeout(
       () => this.connect(),
       Math.min(5000, 250 * 2 ** (this.retry - 1)),
     );
@@ -155,8 +193,16 @@ export class SyncClient {
     if (!frame) return;
     switch (frame.type) {
       case FRAME.SYNC_RESPONSE: {
-        const { stateVector, ops } = unpackSyncResponse(frame.payload);
+        const { stateVector, ops, userId } = unpackSyncResponse(frame.payload);
+        // a share-link guest is assigned its actor id by the server and ops are
+        // signed as that id, so adopt it before anything else touches the doc
+        if (userId && userId !== this.opts.userId) {
+          this.opts.doc.setActor(userId);
+          this.opts.userId = userId;
+        }
         for (const raw of ops) this.applyIncoming(raw);
+        // the server leaves out superseded writes it has; count them as seen
+        this.opts.doc.markSeen(new Map(Object.entries(stateVector)));
         this.setStatus("open");
         this.inFlight = 0;
         // The server tells us how far it has got with our ops; anything beyond
@@ -195,9 +241,18 @@ export class SyncClient {
         this.onPresence?.();
         break;
       }
-      case FRAME.ERROR:
-        console.error("sync error", td.decode(frame.payload));
+      case FRAME.ERROR: {
+        const err = JSON.parse(td.decode(frame.payload)) as ServerError;
+        console.error("sync error", err.code, err.message);
+        // retrying cannot fix these; a hot reconnect loop would just hammer the
+        // server until the user reloads with a working link
+        if (FATAL_ERRORS.has(err.code)) {
+          this.closed = true;
+          this.setStatus("offline");
+          this.ws?.close();
+        }
         break;
+      }
       default:
         break;
     }
@@ -281,6 +336,11 @@ export class SyncClient {
 
   close(): void {
     this.closed = true;
+    clearTimeout(this.retryTimer);
+    if (typeof window !== "undefined") {
+      window.removeEventListener("offline", this.onOffline);
+      window.removeEventListener("online", this.onOnline);
+    }
     this.ws?.close();
   }
 }

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Doc } from "@tandem/crdt";
 import { SyncClient, type ConnectionStatus } from "../lib/sync";
 import {
-  colorFor,
   hits,
   num,
   renderPresenceCursors,
@@ -113,6 +112,9 @@ export function Board({ client, doc }: BoardProps): React.JSX.Element {
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
+      // Otherwise the mousedown default moves focus to <body>, which blurs and
+      // closes the text input this handler is about to open.
+      e.preventDefault();
       e.currentTarget.setPointerCapture(e.pointerId);
       const p = pointFromEvent(e);
 
@@ -461,6 +463,8 @@ export function Board({ client, doc }: BoardProps): React.JSX.Element {
       <div style={{ position: "relative", flex: 1 }}>
         <canvas
           ref={canvasRef}
+          role="img"
+          aria-label={`Whiteboard, ${doc.shapes().length} shapes`}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
@@ -504,5 +508,3 @@ export function Board({ client, doc }: BoardProps): React.JSX.Element {
     </div>
   );
 }
-
-export { colorFor };

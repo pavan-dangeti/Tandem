@@ -5,6 +5,7 @@ import { startServer, type RunningServer } from "../../server/src/server.js";
 import { MemoryMetaStore } from "../../server/src/meta.js";
 import { MemoryOpStore } from "../../server/src/store.js";
 import { SyncClient } from "../src/lib/sync.js";
+import type { OpSpec } from "@tandem/crdt";
 
 let srv: RunningServer;
 let meta: MemoryMetaStore;
@@ -65,8 +66,8 @@ async function addMember(
   });
 }
 
-function nodeSocketFactory(url: string): WebSocket {
-  return new WebSocket(url) as unknown as WebSocket;
+function nodeSocketFactory(url: string): globalThis.WebSocket {
+  return new WebSocket(url) as unknown as globalThis.WebSocket;
 }
 
 function makeClient(
@@ -97,6 +98,41 @@ async function waitFor(
     if (Date.now() - start > timeoutMs) throw new Error("waitFor timed out");
     await new Promise((r) => setTimeout(r, 10));
   }
+}
+
+async function shareToken(token: string, boardId: string): Promise<string> {
+  const res = await fetch(`http://127.0.0.1:${port}/boards/${boardId}/share`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ role: "editor", ttlSeconds: 600 }),
+  });
+  return ((await res.json()) as { token: string }).token;
+}
+
+/** A guest joining by share link: the server, not the client, names it. */
+function makeGuest(
+  boardId: string,
+  token: string,
+): {
+  client: SyncClient;
+  doc: Doc;
+} {
+  const doc = new Doc(`pending-${Math.random().toString(36).slice(2)}`);
+  const client = new SyncClient({
+    doc,
+    boardId,
+    token,
+    // deliberately not the id the server will assign
+    userId: "pending",
+    name: "Guest",
+    color: "#3355ff",
+    url: `ws://127.0.0.1:${port}/ws`,
+    socketFactory: nodeSocketFactory,
+  });
+  return { client, doc };
 }
 
 describe("SyncClient", () => {
@@ -250,6 +286,57 @@ describe("SyncClient", () => {
 
     ca.client.close();
     cb.client.close();
+  });
+
+  it("gives share-link guests the actor id the server assigned and syncs their edits", async () => {
+    const owner = await register("sc-guest-owner@test.local");
+    const boardId = await createBoard(owner.token);
+    const ana = makeGuest(boardId, await shareToken(owner.token, boardId));
+    const ben = makeGuest(boardId, await shareToken(owner.token, boardId));
+
+    await ana.client.start();
+    await ben.client.start();
+    await waitFor(
+      () => ana.client.status === "open" && ben.client.status === "open",
+    );
+
+    // each guest must act as the id the server handed it, not its placeholder
+    expect(ana.client.userId).toMatch(/^guest-editor-/);
+    expect(ben.client.userId).toMatch(/^guest-editor-/);
+    expect(ana.client.userId).not.toBe(ben.client.userId);
+
+    const anaRect = (n: string): OpSpec[] => [
+      { t: "putObject", objId: n, type: "rect" },
+      { t: "zInsert", objId: n, parent: null },
+    ];
+    await ana.client.edit(anaRect("ana-1"));
+    await ben.client.edit(anaRect("ben-1"));
+    await waitFor(
+      () => ana.doc.shapes().length === 2 && ben.doc.shapes().length === 2,
+    );
+
+    // Ana loses the network, keeps editing, then comes back
+    (ana.client as unknown as { ws: WebSocket | null }).ws?.close();
+    await waitFor(() => ana.client.status === "offline");
+    await ana.client.edit(anaRect("ana-2"));
+    await ben.client.edit(anaRect("ben-2"));
+    await waitFor(() => ben.doc.shapes().length === 3);
+
+    await waitFor(() => ana.client.status === "open", 5000);
+    await waitFor(() => ana.client.hasUnsentOps === false, 5000);
+    await waitFor(() => ana.doc.shapes().length === 4, 5000);
+
+    const canon = (d: Doc): string =>
+      JSON.stringify(
+        d
+          .shapes()
+          .map((s) => s.id)
+          .sort(),
+      );
+    expect(canon(ana.doc)).toBe(canon(ben.doc));
+
+    ana.client.close();
+    ben.client.close();
   });
 
   it("text edits merge across peers", async () => {

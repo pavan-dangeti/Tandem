@@ -31,3 +31,46 @@ jobs:
           TEST_REDIS_URL: redis://localhost:6379
       - if: always()
         run: docker compose down -v
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter web exec playwright install --with-deps chromium
+      # three browser contexts on one board, offline merge, viewer
+      # enforcement and markup injection, against the production build
+      - run: pnpm --filter web e2e
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: apps/web/test-results
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # high/critical advisories in the dependency tree fail the build
+      - name: dependency audit
+        run: pnpm audit --audit-level high
+      - name: build server image
+        run: docker build -f apps/server/Dockerfile -t tandem-server:ci .
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: tandem-server:ci
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true

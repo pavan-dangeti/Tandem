@@ -1,5 +1,4 @@
-import type { Doc, Shape } from "@tandem/crdt";
-import type { Value } from "@tandem/crdt";
+import type { Shape } from "@tandem/crdt";
 
 export interface Point {
   x: number;
@@ -17,9 +16,6 @@ export const SHAPE_TYPES = [
 ] as const;
 export type ShapeType = (typeof SHAPE_TYPES)[number];
 
-export const isShapeType = (v: string): v is ShapeType =>
-  (SHAPE_TYPES as readonly string[]).includes(v);
-
 export function num(shape: Shape, key: string, fallback = 0): number {
   const v = shape.props[key];
   return v && v.kind === "double"
@@ -29,12 +25,12 @@ export function num(shape: Shape, key: string, fallback = 0): number {
       : fallback;
 }
 
-export function pointsOf(shape: Shape): Point[] {
+function pointsOf(shape: Shape): Point[] {
   const v = shape.props["points"];
   return v && v.kind === "points" ? v.v : [];
 }
 
-export function bounds(shape: Shape): {
+function bounds(shape: Shape): {
   x: number;
   y: number;
   w: number;
@@ -232,17 +228,4 @@ export function renderPresenceCursors(
     ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
     ctx.fillText(p.name, p.cursor.x + 14, p.cursor.y + 12);
   }
-}
-
-export function docSnapshot(doc: Doc): {
-  shapes: Shape[];
-  texts: Record<string, string>;
-} {
-  const texts: Record<string, string> = {};
-  for (const s of doc.shapes()) texts[s.id] = doc.text(s.id);
-  return { shapes: doc.shapes(), texts };
-}
-
-export function propDouble(v: number): Value {
-  return { kind: "double", v };
 }
