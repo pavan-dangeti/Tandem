@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { Doc, decodeOp, encodeOp } from "@tandem/crdt";
 import type { Op } from "@tandem/crdt";
 import {
@@ -8,11 +8,14 @@ import {
   MAX_FRAME,
   buildFrame,
   packOps,
+  helloSchema,
+  opSchema,
   packSyncResponse,
   parseFrame,
+  presenceSchema,
   unpackOps,
+  unpackSyncResponse,
 } from "@tandem/protocol";
-import { helloSchema, opSchema, presenceSchema } from "@tandem/protocol";
 import {
   issueToken,
   verifyToken,
@@ -25,6 +28,21 @@ import {
 import { MemoryMetaStore, PostgresMetaStore, type MetaStore } from "./meta.js";
 import { MemoryOpStore, PostgresOpStore, type OpStore } from "./store.js";
 import { LocalBus, type Bus } from "./bus.js";
+import {
+  batchOps,
+  fanoutLatency,
+  opsApplied,
+  opsReceived,
+  registry,
+  wsConnections,
+  wsConnectionsTotal,
+  snapshotSize,
+  httpDuration,
+  httpRequests,
+  opLogWrite,
+  opsRejected,
+} from "./metrics.js";
+import { inSpan } from "./trace.js";
 import { z } from "zod";
 
 const te = new TextEncoder();
@@ -38,6 +56,7 @@ const BOARD_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 
 interface Ctx {
   ws: WebSocket;
+  connId: string;
   userId: string;
   role: Role;
   oppWindowStart: number;
@@ -47,7 +66,6 @@ interface Ctx {
 
 interface Session {
   doc: Doc;
-  cacheDocJson: string;
   opsSinceSnapshot: number;
   loads: Promise<void> | null;
 }
@@ -59,7 +77,8 @@ export interface ServerOptions {
   store?: OpStore;
   /** cross-node fan-out; defaults to in-process fan-out for single-node runs */
   bus?: Bus;
-  instanceId?: string;
+  /** how often active boards pull missed ops from the log */
+  reconcileMs?: number;
 }
 
 export interface RunningServer {
@@ -77,6 +96,7 @@ export async function startServer(
   const store: OpStore =
     opts.store ??
     (databaseUrl ? new PostgresOpStore(databaseUrl) : new MemoryOpStore());
+  // Without Redis, fan-out stays in this process, which is only right for one node.
   const bus: Bus = opts.bus ?? new LocalBus();
   await meta.init();
   await store.init();
@@ -119,22 +139,26 @@ export async function startServer(
     if (s) return s;
     s = {
       doc: new Doc(`srv:${boardId}`),
-      cacheDocJson: "",
       opsSinceSnapshot: 0,
       loads: null,
     };
     sessions.set(boardId, s);
     s.loads = (async () => {
+      // snapshot (compacted ops + the state vector they cover), then only the
+      // log rows beyond that vector
+      let covered: Record<string, number> = {};
       const snap = await store.loadSnapshot(boardId);
       if (snap) {
         try {
-          const ops = JSON.parse(td.decode(snap.state)) as Op[];
-          for (const op of ops) s!.doc.applyRemote(op);
+          const { stateVector, ops } = unpackSyncResponse(snap);
+          for (const raw of ops) s!.doc.applyRemote(decodeOp(raw));
+          s!.doc.markSeen(new Map(Object.entries(stateVector)));
+          covered = stateVector;
         } catch {
-          // corrupt snapshot: fall back to full op log
+          // unreadable snapshot: the full log alone rebuilds the board
         }
       }
-      const rows = await store.loadOps(boardId);
+      const rows = await store.loadOps(boardId, covered);
       for (const r of rows) {
         try {
           s!.doc.applyRemote(decodeOp(r.data));
@@ -148,13 +172,23 @@ export async function startServer(
   }
 
   async function snapshotSession(s: Session, boardId: string): Promise<void> {
-    const ops = s.doc.opList;
-    const json = JSON.stringify(ops);
-    await store.saveSnapshot(boardId, te.encode(json), ops.length);
+    const state = packSyncResponse(
+      Object.fromEntries(s.doc.stateVector()),
+      s.doc.compactOps().map((op) => encodeOp(op)),
+    );
+    snapshotSize.observe(state.byteLength);
+    await store.saveSnapshot(boardId, state);
     s.opsSinceSnapshot = 0;
   }
 
   const server = createServer((req, res) => {
+    const header = req.headers["x-request-id"];
+    const requestId =
+      typeof header === "string" && /^[\w-]{1,64}$/.test(header)
+        ? header
+        : randomUUID();
+    res.setHeader("x-request-id", requestId);
+    const started = performance.now();
     void (async () => {
       const url = new URL(req.url ?? "/", "http://localhost");
       // The web client is served separately in development, so the API answers
@@ -172,9 +206,32 @@ export async function startServer(
         return;
       }
       res.setHeader("access-control-allow-origin", cors);
+      // The API serves JSON and a WebSocket upgrade only; no HTML, no framing,
+      // no referrer leakage, and no inline script anywhere in this process.
+      res.setHeader(
+        "content-security-policy",
+        "default-src 'none'; frame-ancestors 'none'",
+      );
+      res.setHeader("x-content-type-options", "nosniff");
+      res.setHeader("referrer-policy", "no-referrer");
+      res.setHeader("cross-origin-resource-policy", "same-site");
       const json = (code: number, body: unknown): void => {
+        const route = url.pathname.replace(/[0-9a-f]{8,}/gi, ":id");
+        const ms = performance.now() - started;
+        httpRequests.inc({ route, status: String(code) });
+        httpDuration.observe({ route }, ms);
         res.writeHead(code, { "content-type": "application/json" });
         res.end(JSON.stringify(body));
+        console.log(
+          JSON.stringify({
+            msg: "http",
+            requestId,
+            method: req.method,
+            route,
+            status: code,
+            ms: Math.round(ms),
+          }),
+        );
       };
       const authed = async (): Promise<{ userId: string } | null> => {
         const auth = req.headers.authorization ?? "";
@@ -186,6 +243,11 @@ export async function startServer(
 
       if (req.method === "GET" && url.pathname === "/healthz") {
         json(200, { ok: true });
+        return;
+      }
+      if (req.method === "GET" && url.pathname === "/metrics") {
+        res.setHeader("content-type", registry.contentType);
+        res.end(await registry.metrics());
         return;
       }
       if (req.method === "GET" && url.pathname === "/readyz") {
@@ -287,13 +349,16 @@ export async function startServer(
       }
       json(404, { error: "not_found" });
     })().catch((err) => {
-      console.error(JSON.stringify({ msg: "http_error", err: String(err) }));
+      console.error(
+        JSON.stringify({ msg: "http_error", requestId, err: String(err) }),
+      );
+      httpRequests.inc({ route: "unhandled", status: "500" });
       res.writeHead(500, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "internal" }));
     });
   });
 
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME });
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname !== "/ws") {
@@ -306,6 +371,14 @@ export async function startServer(
   });
 
   wss.on("connection", (ws) => {
+    const connId = randomUUID();
+    // ws reports protocol violations (an oversize frame, bad framing) as an
+    // error event and closes the socket itself; unhandled, it would crash the node.
+    ws.on("error", (err) => {
+      console.error(
+        JSON.stringify({ msg: "ws_error", connId, err: String(err) }),
+      );
+    });
     const close = (reason = "closed"): void => {
       try {
         ws.close(1000, reason);
@@ -314,7 +387,7 @@ export async function startServer(
       }
     };
     let ctx: Ctx | null = null;
-    let roomRoom: Set<Ctx> | null = null;
+    let room: Set<Ctx> | null = null;
     let boardIdOf: string | null = null;
     const helloTimer = setTimeout(() => {
       if (!ctx) {
@@ -325,12 +398,6 @@ export async function startServer(
 
     ws.on("message", (data: RawData) => {
       void (async () => {
-        const dataBuf = data as Buffer;
-        if (dataBuf.length > MAX_FRAME) {
-          sendError(ws, "too_large", "frame exceeds 1MB");
-          close();
-          return;
-        }
         const parsed = parseFrame(new Uint8Array(data as Buffer));
         if (!parsed) {
           sendError(ws, "bad_frame", "unparseable frame");
@@ -347,18 +414,18 @@ export async function startServer(
             sendError(ws, "bad_hello", "invalid hello payload");
             return;
           }
-          const { token, boardId, stateVector } = hello.data;
+          const { token, boardId, stateVector, actor } = hello.data;
           if (!BOARD_ID_RE.test(boardId)) {
             sendError(ws, "bad_board_id", "invalid board id");
             return;
           }
-          // derive identity
           let userId: string;
           let role: Role;
           const share = verifyShareToken(token, boardId);
           if (share) {
             role = share.role;
-            userId = `guest-${share.role}-${randomBytes(4).toString("hex")}`;
+            // stable per device, so a reconnecting guest keeps its id
+            userId = actor ? `${share.actorId}-${actor}` : share.actorId;
           } else {
             const verifiedId = await verifyToken(token);
             if (!verifiedId) {
@@ -373,7 +440,7 @@ export async function startServer(
               return;
             }
             role = memberRole as Role;
-            userId = verifiedId;
+            userId = actor ? `${verifiedId}-${actor}` : verifiedId;
           }
           const session = await getSession(boardId);
           const missing = session.doc.missingSince(
@@ -383,24 +450,25 @@ export async function startServer(
           const payload = packSyncResponse(
             sv,
             missing.map((op) => encodeOp(op)),
+            userId,
           );
           ws.send(buildFrame(FRAME.SYNC_RESPONSE, payload));
 
           ctx = {
             ws,
+            connId,
             userId,
             role,
             oppWindowStart: Date.now(),
             opsThisWindow: 0,
             inflight: 0,
           };
-          roomRoom = getRoom(boardId);
-          roomRoom.add(ctx);
+          room = getRoom(boardId);
+          room.add(ctx);
           boardIdOf = boardId;
           if (helloTimer) clearTimeout(helloTimer);
           return;
         }
-        // steady state
         switch (parsed.type) {
           case FRAME.OP_BATCH: {
             handleOpBatch(ctx, boardIdOf!, parsed.payload);
@@ -421,16 +489,20 @@ export async function startServer(
         console.error(
           JSON.stringify({
             msg: "ws_handler_error",
+            connId,
             err: String(err),
             stack: err instanceof Error ? err.stack : undefined,
           }),
         );
-        sendError(ws, "internal", String(err));
+        sendError(ws, "internal", "internal error");
       });
     });
 
+    wsConnections.inc();
+    wsConnectionsTotal.inc();
     ws.on("close", () => {
-      if (ctx && roomRoom) roomRoom.delete(ctx);
+      wsConnections.dec();
+      if (ctx && room) room.delete(ctx);
       if (helloTimer) clearTimeout(helloTimer);
     });
   });
@@ -456,6 +528,7 @@ export async function startServer(
     try {
       opsBytes = unpackOps(payload);
     } catch {
+      opsRejected.inc({ reason: "bad_batch" });
       sendError(ctx.ws, "bad_batch", "unpack failed");
       return;
     }
@@ -473,10 +546,10 @@ export async function startServer(
       );
       return;
     }
-    // validate + enforce viewer rejection
     const parsedOps: Op[] = [];
     for (const o of opsBytes) {
       if (ctx.role === "viewer") {
+        opsRejected.inc({ reason: "viewer" });
         sendError(ctx.ws, "forbidden", "viewers cannot send operations");
         return;
       }
@@ -484,75 +557,92 @@ export async function startServer(
         const op = decodeOp(o);
         opSchema.parse(op);
         if (op.actor !== ctx.userId) {
+          opsRejected.inc({ reason: "bad_actor" });
           sendError(ctx.ws, "bad_actor", "op actor must equal session user");
           return;
         }
         parsedOps.push(op);
       } catch {
+        opsRejected.inc({ reason: "bad_op" });
         sendError(ctx.ws, "bad_op", "op failed schema validation");
         return;
       }
     }
     ctx.opsThisWindow += opsBytes.length;
     ctx.inflight++;
-    void (async () => {
-      try {
-        const session = await getSession(boardId);
-        const applied: Op[] = [];
-        for (const op of parsedOps) {
-          if (session.doc.applyRemote(op)) applied.push(op);
-        }
-        if (applied.length > 0) {
-          const encoded = applied.map((op) => encodeOp(op));
-          // Durable first, then fan out: an ack means the op survived a crash.
-          await store.appendOps(
-            boardId,
-            applied.map((op, i) => ({
-              actor: op.actor,
-              seq: op.seq,
-              wall: op.wall,
-              logical: op.logical,
-              data: encoded[i]!,
-            })),
-          );
-          session.opsSinceSnapshot += applied.length;
-          if (session.opsSinceSnapshot >= SNAPSHOT_EVERY) {
-            await snapshotSession(session, boardId);
+    opsReceived.inc(opsBytes.length);
+    batchOps.observe(opsBytes.length);
+    const batchStartedAt = performance.now();
+    void inSpan(
+      "batch.apply",
+      { "board.id": boardId, "ops.count": parsedOps.length },
+      async () => {
+        try {
+          const session = await getSession(boardId);
+          const applied: Op[] = [];
+          for (const op of parsedOps) {
+            if (session.doc.applyRemote(op)) applied.push(op);
           }
-          broadcastOps(boardId, encoded, ctx);
-          // The rows are durable at this point, so a fan-out failure must not
-          // withhold the ack: clients reconnect and repair via state vector.
-          await bus
-            .publish({ origin: bus.id, boardId, ops: encoded })
-            .catch((err: unknown) => {
-              console.error(
+          if (applied.length > 0) {
+            const encoded = applied.map((op) => encodeOp(op));
+            opsApplied.inc(applied.length);
+            // Durable first, then fan out: an ack means the op survived a crash.
+            const writeTimer = opLogWrite.startTimer();
+            await store.appendOps(
+              boardId,
+              applied.map((op, i) => ({
+                actor: op.actor,
+                seq: op.seq,
+                wall: op.wall,
+                logical: op.logical,
+                data: encoded[i]!,
+              })),
+            );
+            writeTimer();
+            session.opsSinceSnapshot += applied.length;
+            if (session.opsSinceSnapshot >= SNAPSHOT_EVERY) {
+              await snapshotSession(session, boardId);
+            }
+            broadcastOps(boardId, encoded, ctx);
+            // The rows are durable at this point, so a fan-out failure must not
+            // withhold the ack: clients reconnect and repair via state vector.
+            await bus
+              .publish({ origin: bus.id, boardId, ops: encoded })
+              .catch((err: unknown) => {
+                console.error(
+                  JSON.stringify({
+                    msg: "fanout_publish_failed",
+                    boardId,
+                    err: String(err),
+                  }),
+                );
+              });
+            fanoutLatency.observe(performance.now() - batchStartedAt);
+          }
+          ctx.ws.send(
+            buildFrame(
+              FRAME.ACK,
+              te.encode(
                 JSON.stringify({
-                  msg: "fanout_publish_failed",
-                  boardId,
-                  err: String(err),
+                  batchId: batchIdOf(payload),
+                  applied: applied.length,
+                  stateVector: Object.fromEntries(session.doc.stateVector()),
                 }),
-              );
-            });
-        }
-        // ack
-        ctx.ws.send(
-          buildFrame(
-            FRAME.ACK,
-            te.encode(
-              JSON.stringify({
-                batchId: batchIdOf(payload),
-                applied: applied.length,
-                stateVector: Object.fromEntries(session.doc.stateVector()),
-              }),
+              ),
             ),
-          ),
-        );
-      } finally {
-        ctx.inflight--;
-      }
-    })().catch((err) => {
+          );
+        } finally {
+          ctx.inflight--;
+        }
+      },
+    ).catch((err) => {
       console.error(
-        JSON.stringify({ msg: "batch_handler_error", err: String(err) }),
+        JSON.stringify({
+          msg: "batch_handler_error",
+          connId: ctx.connId,
+          boardId,
+          err: String(err),
+        }),
       );
     });
   }
@@ -577,10 +667,30 @@ export async function startServer(
     }
   }
 
-  function getRoomSetForClose(): void {
-    // used at shutdown
-    for (const room of rooms.values()) for (const c of room) c.ws.close();
+  // Redis pub/sub is at-most-once: a lost fan-out message would leave this
+  // node's cached board, and the clients on it, behind until a restart. The op
+  // log is the source of truth, so boards with clients here pull what they lack.
+  async function reconcile(): Promise<void> {
+    for (const [boardId, room] of rooms) {
+      const session = sessions.get(boardId);
+      if (room.size === 0 || !session) continue;
+      const rows = await store.loadOps(
+        boardId,
+        Object.fromEntries(session.doc.stateVector()),
+      );
+      const fresh = rows
+        .map((r) => r.data)
+        .filter((raw) => session.doc.applyRemote(decodeOp(raw)));
+      broadcastOps(boardId, fresh, null);
+    }
   }
+  const reconcileTimer = setInterval(() => {
+    reconcile().catch((err: unknown) =>
+      console.error(
+        JSON.stringify({ msg: "reconcile_failed", err: String(err) }),
+      ),
+    );
+  }, opts.reconcileMs ?? 5000);
 
   const port = typeof opts.port === "number" ? opts.port : initialisePort();
   return new Promise((resolve) => {
@@ -589,7 +699,8 @@ export async function startServer(
       resolve({
         port: typeof addr === "object" && addr ? addr.port : port,
         close: async () => {
-          getRoomSetForClose();
+          clearInterval(reconcileTimer);
+          for (const room of rooms.values()) for (const c of room) c.ws.close();
           await bus.close();
           await new Promise<void>((res) =>
             wss.close(() => server.close(() => res())),

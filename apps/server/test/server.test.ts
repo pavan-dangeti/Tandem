@@ -1,12 +1,14 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import WebSocket from "ws";
-import { Doc, encodeOp } from "@tandem/crdt";
+import { Doc, decodeOp, encodeOp } from "@tandem/crdt";
 import { startServer, type RunningServer } from "../src/server.js";
 import {
   FRAME,
+  MAX_FRAME,
   buildFrame,
   parseFrame,
   packOps,
+  packSyncResponse,
   unpackOps,
 } from "@tandem/protocol";
 import { MemoryMetaStore } from "../src/meta.js";
@@ -92,57 +94,65 @@ function wsConnect(
   boardId: string,
   token: string,
   stateVector: Record<string, number> = {},
+  actor?: string,
 ): Promise<{
   ws: WebSocket;
-  sync: Promise<{ sv: Record<string, number>; ops: Uint8Array[] }>;
+  sync: Promise<{
+    sv: Record<string, number>;
+    ops: Uint8Array[];
+    userId: string;
+  }>;
 }> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
     let settled = false;
-    const sync = new Promise<{ sv: Record<string, number>; ops: Uint8Array[] }>(
-      (res2, rej2) => {
-        ws.on("message", (data: Buffer) => {
-          const p = parseFrame(new Uint8Array(data));
-          if (!p || settled) return;
-          if (p.type === FRAME.ERROR) {
-            settled = true;
-            rej2(new Error(td.decode(p.payload)));
-            return;
-          }
-          if (p.type === FRAME.SYNC_RESPONSE) {
-            settled = true;
-            const dv = new DataView(
-              p.payload.buffer,
-              p.payload.byteOffset,
-              p.payload.byteLength,
-            );
-            const jsonLen = dv.getUint32(0);
-            const { stateVector: sv } = JSON.parse(
-              td.decode(p.payload.subarray(4, 4 + jsonLen)),
-            ) as { stateVector: Record<string, number> };
-            const ops: Uint8Array[] = [];
-            if (p.payload.byteLength > 4 + jsonLen)
-              ops.push(...unpackOps(p.payload.subarray(4 + jsonLen)));
-            res2({ sv, ops: ops });
-          }
-        });
-        ws.on("open", () => {
-          ws.send(
-            buildFrame(
-              FRAME.HELLO,
-              te.encode(
-                JSON.stringify({
-                  protocol: "tandem/1",
-                  token,
-                  boardId,
-                  stateVector,
-                }),
-              ),
-            ),
+    const sync = new Promise<{
+      sv: Record<string, number>;
+      ops: Uint8Array[];
+      userId: string;
+    }>((res2, rej2) => {
+      ws.on("message", (data: Buffer) => {
+        const p = parseFrame(new Uint8Array(data));
+        if (!p || settled) return;
+        if (p.type === FRAME.ERROR) {
+          settled = true;
+          rej2(new Error(td.decode(p.payload)));
+          return;
+        }
+        if (p.type === FRAME.SYNC_RESPONSE) {
+          settled = true;
+          const dv = new DataView(
+            p.payload.buffer,
+            p.payload.byteOffset,
+            p.payload.byteLength,
           );
-        });
-      },
-    );
+          const jsonLen = dv.getUint32(0);
+          const { stateVector: sv, userId } = JSON.parse(
+            td.decode(p.payload.subarray(4, 4 + jsonLen)),
+          ) as { stateVector: Record<string, number>; userId: string };
+          const ops: Uint8Array[] = [];
+          if (p.payload.byteLength > 4 + jsonLen)
+            ops.push(...unpackOps(p.payload.subarray(4 + jsonLen)));
+          res2({ sv, ops, userId });
+        }
+      });
+      ws.on("open", () => {
+        ws.send(
+          buildFrame(
+            FRAME.HELLO,
+            te.encode(
+              JSON.stringify({
+                protocol: "tandem/1",
+                token,
+                boardId,
+                stateVector,
+                actor,
+              }),
+            ),
+          ),
+        );
+      });
+    });
     ws.on("error", reject);
     ws.on("open", () => resolve({ ws, sync }));
   });
@@ -303,11 +313,103 @@ describe("sync protocol v1", () => {
     port = srv.port;
   });
 
+  it("rebuilds a board from a compacted snapshot plus the log tail", async () => {
+    const a = await register("snapshot-load@x.com");
+    const boardId = await createBoard(a.token);
+    const author = new Doc(a.userId);
+    const objId = `${a.userId}:1`;
+    const ops = author.applyLocal([
+      { t: "putObject", objId, type: "rect" },
+      { t: "zInsert", objId, parent: null },
+    ]);
+    for (let i = 0; i < 100; i++)
+      ops.push(
+        ...author.applyLocal([
+          { t: "putProp", objId, key: "x", value: { kind: "int", v: i } },
+        ]),
+      );
+    const head = new Doc("head");
+    head.merge(ops.slice(0, 80));
+    const seeded = new MemoryOpStore();
+    await seeded.appendOps(
+      boardId,
+      ops.map((op) => ({ ...op, data: encodeOp(op) })),
+    );
+    await seeded.saveSnapshot(
+      boardId,
+      packSyncResponse(
+        Object.fromEntries(head.stateVector()),
+        head.compactOps().map((op) => encodeOp(op)),
+      ),
+    );
+
+    await srv.close();
+    const fromSnapshot = await startServer({
+      port: 0,
+      metaStore: meta,
+      store: seeded,
+    });
+    port = fromSnapshot.port;
+    const c = await wsConnect(boardId, a.token);
+    const { sv, ops: got } = await c.sync;
+    c.ws.close();
+    await fromSnapshot.close();
+    srv = await startServer({ port: 0, metaStore: meta, store });
+    port = srv.port;
+
+    expect(sv[a.userId]).toBe(102);
+    const replica = new Doc("replica");
+    for (const raw of got) replica.applyRemote(decodeOp(raw));
+    expect(replica.shapes()).toEqual(author.shapes());
+    // putObject, zInsert and the one winning write: the 99 superseded writes
+    // never reach a new client
+    expect(got.length).toBe(3);
+  });
+
   it("viewer cannot receive secret and cannot send ops via share token", async () => {
     const a = await register("a6@x.com");
     const boardId = await createBoard(a.token);
     await expect(
       (await wsConnect(boardId, "garbage-token")).sync,
     ).rejects.toThrow();
+  });
+});
+
+describe("share links", () => {
+  it("gives each device on the same link its own actor", async () => {
+    const a = await register("share-actors@x.com");
+    const boardId = await createBoard(a.token);
+    const link = await getShare(a.token, boardId, "editor");
+    const g1 = await wsConnect(boardId, link, {}, "device1");
+    const g2 = await wsConnect(boardId, link, {}, "device2");
+    const again = await wsConnect(boardId, link, {}, "device1");
+    const [s1, s2, s3] = await Promise.all([g1.sync, g2.sync, again.sync]);
+    expect(s1.userId).not.toBe(s2.userId);
+    expect(s3.userId).toBe(s1.userId);
+    for (const c of [g1, g2, again]) c.ws.close();
+  });
+
+  it("gives each device of one signed-in account its own actor", async () => {
+    const a = await register("two-devices@x.com");
+    const boardId = await createBoard(a.token);
+    const laptop = await wsConnect(boardId, a.token, {}, "laptop");
+    const phone = await wsConnect(boardId, a.token, {}, "phone");
+    const [s1, s2] = await Promise.all([laptop.sync, phone.sync]);
+    expect(s1.userId).toBe(`${a.userId}-laptop`);
+    expect(s2.userId).toBe(`${a.userId}-phone`);
+    for (const c of [laptop, phone]) c.ws.close();
+  });
+});
+
+describe("frame size limit", () => {
+  it("closes with 1009 before buffering a frame larger than MAX_FRAME", async () => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    await new Promise((r) => ws.once("open", r));
+    const code = await new Promise<number>((resolve) => {
+      ws.once("close", (c) => resolve(c));
+      ws.send(new Uint8Array(MAX_FRAME + 1));
+    });
+    expect(code).toBe(1009);
+    expect((await fetch(`http://127.0.0.1:${port}/healthz`)).ok).toBe(true);
   });
 });

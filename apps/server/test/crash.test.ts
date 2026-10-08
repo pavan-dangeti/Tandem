@@ -116,7 +116,8 @@ describe.skipIf(!DATABASE_URL)("crash recovery", () => {
           name: "Ana",
           color: "#3355ff",
           url: `ws://127.0.0.1:${port}/ws`,
-          socketFactory: (u) => new WebSocket(u) as unknown as WebSocket,
+          socketFactory: (u) =>
+            new WebSocket(u) as unknown as globalThis.WebSocket,
         }),
       };
     };

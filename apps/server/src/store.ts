@@ -1,92 +1,58 @@
 import pg from "pg";
 
+export interface OpRow {
+  actor: string;
+  seq: number;
+  wall: number;
+  logical: number;
+  data: Uint8Array;
+}
+
 export interface OpStore {
   init(): Promise<void>;
-  appendOps(
-    boardId: string,
-    ops: {
-      actor: string;
-      seq: number;
-      wall: number;
-      logical: number;
-      data: Uint8Array;
-    }[],
-  ): Promise<void>;
-  loadOps(boardId: string): Promise<
-    {
-      actor: string;
-      seq: number;
-      wall: number;
-      logical: number;
-      data: Uint8Array;
-    }[]
-  >;
-  saveSnapshot(
-    boardId: string,
-    state: Uint8Array,
-    opsUpTo: number,
-  ): Promise<void>;
-  loadSnapshot(
-    boardId: string,
-  ): Promise<{ state: Uint8Array; opsUpTo: number } | null>;
+  appendOps(boardId: string, ops: OpRow[]): Promise<void>;
+  /** Ops whose seq is beyond `after[actor]`, i.e. not covered by a snapshot. */
+  loadOps(boardId: string, after?: Record<string, number>): Promise<OpRow[]>;
+  saveSnapshot(boardId: string, state: Uint8Array): Promise<void>;
+  loadSnapshot(boardId: string): Promise<Uint8Array | null>;
   close(): Promise<void>;
 }
 
 export class MemoryOpStore implements OpStore {
-  private ops = new Map<
-    string,
-    {
-      actor: string;
-      seq: number;
-      wall: number;
-      logical: number;
-      data: Uint8Array;
-    }[]
-  >();
-  private snapshots = new Map<string, { state: Uint8Array; opsUpTo: number }>();
+  private ops = new Map<string, OpRow[]>();
+  private seen = new Set<string>();
+  private snapshots = new Map<string, Uint8Array>();
 
   async init(): Promise<void> {
-    /* noop */
+    /* nothing to set up */
   }
-  async appendOps(
-    boardId: string,
-    ops: {
-      actor: string;
-      seq: number;
-      wall: number;
-      logical: number;
-      data: Uint8Array;
-    }[],
-  ): Promise<void> {
+  async appendOps(boardId: string, ops: OpRow[]): Promise<void> {
     const list = this.ops.get(boardId) ?? [];
-    list.push(...ops);
+    // the same (board, actor, seq) uniqueness the Postgres table enforces
+    for (const op of ops) {
+      const key = `${boardId}\u0000${op.actor}\u0000${op.seq}`;
+      if (this.seen.has(key)) continue;
+      this.seen.add(key);
+      list.push(op);
+    }
     this.ops.set(boardId, list);
   }
-  async loadOps(boardId: string): Promise<
-    {
-      actor: string;
-      seq: number;
-      wall: number;
-      logical: number;
-      data: Uint8Array;
-    }[]
-  > {
-    return [...(this.ops.get(boardId) ?? [])];
-  }
-  async saveSnapshot(
+  async loadOps(
     boardId: string,
-    state: Uint8Array,
-    opsUpTo: number,
-  ): Promise<void> {
-    this.snapshots.set(boardId, { state, opsUpTo });
+    after: Record<string, number> = {},
+  ): Promise<OpRow[]> {
+    return (this.ops.get(boardId) ?? []).filter(
+      (r) => r.seq > (after[r.actor] ?? 0),
+    );
   }
-  async loadSnapshot(
-    boardId: string,
-  ): Promise<{ state: Uint8Array; opsUpTo: number } | null> {
+  async saveSnapshot(boardId: string, state: Uint8Array): Promise<void> {
+    this.snapshots.set(boardId, state);
+  }
+  async loadSnapshot(boardId: string): Promise<Uint8Array | null> {
     return this.snapshots.get(boardId) ?? null;
   }
   async close(): Promise<void> {
-    /* noop */
+    /* nothing to release */
   }
 }
 
@@ -105,9 +71,9 @@ CREATE TABLE IF NOT EXISTS ops (
 CREATE TABLE IF NOT EXISTS snapshots (
   board_id TEXT PRIMARY KEY,
   state BYTEA NOT NULL,
-  ops_up_to BIGINT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT now()
 );
+ALTER TABLE snapshots DROP COLUMN IF EXISTS ops_up_to;
 `;
 
 export class PostgresOpStore implements OpStore {
@@ -121,16 +87,7 @@ export class PostgresOpStore implements OpStore {
     await this.pool.query(MIGRATION);
   }
 
-  async appendOps(
-    boardId: string,
-    ops: {
-      actor: string;
-      seq: number;
-      wall: number;
-      logical: number;
-      data: Uint8Array;
-    }[],
-  ): Promise<void> {
+  async appendOps(boardId: string, ops: OpRow[]): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -156,18 +113,15 @@ export class PostgresOpStore implements OpStore {
     }
   }
 
-  async loadOps(boardId: string): Promise<
-    {
-      actor: string;
-      seq: number;
-      wall: number;
-      logical: number;
-      data: Uint8Array;
-    }[]
-  > {
+  async loadOps(
+    boardId: string,
+    after: Record<string, number> = {},
+  ): Promise<OpRow[]> {
     const { rows } = await this.pool.query(
-      "SELECT actor_id, seq, hlc_wall, hlc_logical, data FROM ops WHERE board_id = $1 ORDER BY id",
-      [boardId],
+      `SELECT actor_id, seq, hlc_wall, hlc_logical, data FROM ops
+       WHERE board_id = $1 AND seq > COALESCE(($2::jsonb ->> actor_id)::int, 0)
+       ORDER BY id`,
+      [boardId, JSON.stringify(after)],
     );
     return rows.map((r) => ({
       actor: r.actor_id as string,
@@ -178,29 +132,19 @@ export class PostgresOpStore implements OpStore {
     }));
   }
 
-  async saveSnapshot(
-    boardId: string,
-    state: Uint8Array,
-    opsUpTo: number,
-  ): Promise<void> {
+  async saveSnapshot(boardId: string, state: Uint8Array): Promise<void> {
     await this.pool.query(
-      "INSERT INTO snapshots (board_id, state, ops_up_to) VALUES ($1,$2,$3) ON CONFLICT (board_id) DO UPDATE SET state = EXCLUDED.state, ops_up_to = EXCLUDED.ops_up_to, created_at = now()",
-      [boardId, Buffer.from(state), opsUpTo],
+      "INSERT INTO snapshots (board_id, state) VALUES ($1,$2) ON CONFLICT (board_id) DO UPDATE SET state = EXCLUDED.state, created_at = now()",
+      [boardId, Buffer.from(state)],
     );
   }
 
-  async loadSnapshot(
-    boardId: string,
-  ): Promise<{ state: Uint8Array; opsUpTo: number } | null> {
+  async loadSnapshot(boardId: string): Promise<Uint8Array | null> {
     const { rows } = await this.pool.query(
-      "SELECT state, ops_up_to FROM snapshots WHERE board_id = $1",
+      "SELECT state FROM snapshots WHERE board_id = $1",
       [boardId],
     );
-    if (rows.length === 0) return null;
-    return {
-      state: new Uint8Array(rows[0].state as Buffer),
-      opsUpTo: Number(rows[0].ops_up_to),
-    };
+    return rows.length === 0 ? null : new Uint8Array(rows[0].state as Buffer);
   }
 
   async close(): Promise<void> {
