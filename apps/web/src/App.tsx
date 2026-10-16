@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Doc } from "@tandem/crdt";
 import { Board } from "./components/Board";
+import { ChaosDemo } from "./components/ChaosDemo";
 import { SyncClient } from "./lib/sync";
 import { colorFor } from "./lib/board";
 
@@ -106,27 +107,76 @@ export default function App(): React.JSX.Element {
   const client = useMemo(() => {
     if (!session || !board) return null;
     const doc = new Doc(session.userId);
+    const deviceKey = `tandem.device:${board.boardId}:${session.userId}`;
     return new SyncClient({
       doc,
       boardId: board.boardId,
       token: board.token,
       userId: session.userId,
+      // per board and identity: the server signs it for exactly that actor
+      device: localStorage.getItem(deviceKey) ?? "",
+      onDevice: (token) => localStorage.setItem(deviceKey, token),
       name: session.name,
       color: colorFor(session.userId),
       url: `${API.replace(/^http/, "ws")}/ws`,
     });
   }, [session, board]);
 
+  // Tabs of one browser share a device token, hence a CRDT actor; two of them
+  // editing one board would collide on (actor, seq). Only the tab holding the
+  // board's lock opens it; another waits and takes over when that tab closes.
+  const [lockHeld, setLockHeld] = useState(false);
+  useEffect(() => {
+    if (!board) return;
+    const abort = new AbortController();
+    let release: (() => void) | undefined;
+    navigator.locks
+      .request(
+        `tandem-board-${board.boardId}`,
+        { signal: abort.signal },
+        () => {
+          setLockHeld(true);
+          return new Promise<void>((r) => (release = r));
+        },
+      )
+      .catch(() => {
+        // aborted while still waiting for the other tab
+      });
+    return () => {
+      abort.abort();
+      release?.();
+      setLockHeld(false);
+    };
+  }, [board]);
+
   // StrictMode mounts, unmounts and remounts in dev; SyncClient.start() is
   // restartable so the socket is simply reopened.
   useEffect(() => {
-    if (!client) return;
+    if (!client || !lockHeld) return;
     void client.start();
     return () => client.close();
-  }, [client]);
+  }, [client, lockHeld]);
+
+  // hash navigation (e.g. #chaos) must be state, not read once: a hash change
+  // fires no React render on its own
+  const [hash, setHash] = useState(() => location.hash);
+  useEffect(() => {
+    const onHash = (): void => setHash(location.hash);
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   if (!session) return <SignIn onSubmit={signIn} busy={busy} error={error} />;
-  if (!board)
+  if (board && !lockHeld)
+    return (
+      <div style={center}>
+        <p>This board is open in another tab of this browser.</p>
+        <p style={{ color: "#666", fontSize: 14 }}>
+          It opens here as soon as that tab is closed.
+        </p>
+      </div>
+    );
+  if (!board || !client)
     return (
       <Lobby
         session={session}
@@ -135,20 +185,93 @@ export default function App(): React.JSX.Element {
         error={error}
       />
     );
-  if (!client)
+
+  if (hash === "#chaos") {
     return (
-      <Lobby
-        session={session}
-        onCreate={createBoard}
-        busy={busy}
-        error={error}
-      />
+      <div>
+        <p style={{ margin: "12px 16px 0" }}>
+          <a href={location.pathname + location.search}>
+            &larr; back to the board
+          </a>
+        </p>
+        <ChaosDemo token={board.token} />
+      </div>
     );
+  }
 
   return (
     <div>
       <Board client={client} doc={client.doc} />
+      <div
+        style={{
+          position: "fixed",
+          bottom: 8,
+          right: 12,
+          fontSize: 12,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "flex-end",
+          gap: 6,
+        }}
+      >
+        <SharePanel board={board} />
+        <a href="#chaos">chaos demo</a>
+      </div>
     </div>
+  );
+}
+
+function SharePanel({ board }: { board: BoardRef }): React.JSX.Element {
+  const [links, setLinks] = useState<{ role: string; url: string }[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  async function createLinks(): Promise<void> {
+    setError(null);
+    try {
+      const out = [];
+      for (const role of ["editor", "viewer"] as const) {
+        const res = await fetch(`${API}/boards/${board.boardId}/share`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${board.token}`,
+          },
+          body: JSON.stringify({ role, ttlSeconds: 7 * 24 * 3600 }),
+        });
+        if (!res.ok)
+          throw new Error(
+            res.status === 403 || res.status === 401
+              ? "Only the board owner can share it"
+              : "Could not create share links",
+          );
+        const { token } = (await readJson(res)) as { token: string };
+        const url = new URL(location.pathname, location.origin);
+        url.searchParams.set("board", board.boardId);
+        url.searchParams.set("token", token);
+        out.push({ role, url: url.toString() });
+      }
+      setLinks(out);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not share");
+    }
+  }
+
+  return (
+    <>
+      {links.map((l) => (
+        <label key={l.role} style={{ display: "flex", gap: 6 }}>
+          {l.role} link
+          <input
+            readOnly
+            value={l.url}
+            onFocus={(e) => e.currentTarget.select()}
+            style={{ width: 220, fontSize: 12 }}
+          />
+        </label>
+      ))}
+      {error && <span style={{ color: "#c0392b" }}>{error}</span>}
+      <button onClick={() => void createLinks()}>Share</button>
+    </>
   );
 }
 

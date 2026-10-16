@@ -120,10 +120,29 @@ describe.skipIf(!DATABASE_URL)("postgres store", () => {
 
   it("snapshot round-trips through postgres", async () => {
     const boardId = `snap-test-${Date.now()}`;
-    const snap = te.encode(JSON.stringify([{ seq: 1 }]));
-    await store.saveSnapshot(boardId, snap, 1);
-    const loaded = await store.loadSnapshot(boardId);
-    expect(loaded).not.toBeNull();
-    expect(td.decode(loaded!.state)).toContain("seq");
+    const snap = te.encode("snapshot bytes");
+    await store.saveSnapshot(boardId, snap);
+    expect(td.decode((await store.loadSnapshot(boardId))!)).toBe(
+      "snapshot bytes",
+    );
+  });
+
+  it("loads only the log rows beyond a snapshot's state vector", async () => {
+    const boardId = `tail-test-${Date.now()}`;
+    const row = (actor: string, seq: number) => ({
+      actor,
+      seq,
+      wall: seq,
+      logical: 0,
+      data: new Uint8Array([seq]),
+    });
+    await store.appendOps(boardId, [
+      row("a", 1),
+      row("a", 2),
+      row("a", 3),
+      row("b", 1),
+    ]);
+    const tail = await store.loadOps(boardId, { a: 2 });
+    expect(tail.map((r) => `${r.actor}${r.seq}`)).toEqual(["a3", "b1"]);
   });
 });

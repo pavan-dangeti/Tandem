@@ -72,6 +72,8 @@ export const helloSchema = z.object({
   token: z.string().min(1).max(4096),
   boardId: z.string().min(1).max(128),
   stateVector: z.record(z.string().max(64), z.number().int().nonnegative()),
+  // The device token from an earlier SyncResponse, or "" to be issued one.
+  device: z.string().max(128).optional(),
 });
 
 export const ackSchema = z.object({

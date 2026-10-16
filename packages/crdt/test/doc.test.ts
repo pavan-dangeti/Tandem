@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   Doc,
-  Op,
+  type Op,
   encodeOp,
   decodeOp,
   hlcCompare,
@@ -36,6 +36,25 @@ describe("HLC", () => {
 });
 
 describe("Doc convergence", () => {
+  it("keeps distinct z-entries for object ids outside the actor:counter convention", () => {
+    // z-node identity used to be parsed out of the objId string, so ids like
+    // these collapsed onto one node and objects vanished from the order
+    const d = new Doc("solo");
+    for (const id of ["plain", "board:base", "a:b:c", "7"]) {
+      d.applyLocal([
+        { t: "putObject", objId: id, type: "rect" },
+        { t: "zInsert", objId: id, parent: null },
+      ]);
+    }
+    expect(
+      d
+        .shapes()
+        .map((s) => s.id)
+        .sort(),
+    ).toEqual(["7", "a:b:c", "board:base", "plain"]);
+    expect(d.materialize().order).toHaveLength(4);
+  });
+
   it("two replicas converge after random interleaving and duplicates", () => {
     const a = new Doc("a1");
     const b = new Doc("a2");

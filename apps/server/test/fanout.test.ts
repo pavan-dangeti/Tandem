@@ -66,7 +66,7 @@ describe.skipIf(!REDIS_URL)("multi-node fan-out over redis", () => {
       name,
       color: "#3355ff",
       url: `ws://127.0.0.1:${port}/ws`,
-      socketFactory: (u) => new WebSocket(u) as unknown as WebSocket,
+      socketFactory: (u) => new WebSocket(u) as unknown as globalThis.WebSocket,
     });
   }
 
@@ -194,5 +194,68 @@ describe.skipIf(!REDIS_URL)("multi-node fan-out over redis", () => {
     expect(canon(clientA)).toBe(canon(clientB));
     clientA.close();
     clientB.close();
+  });
+});
+
+describe("anti-entropy", () => {
+  it("delivers ops whose fan-out message was lost, from the shared op log", async () => {
+    // Each node gets its own in-process bus, so no publish ever reaches the
+    // other node: exactly what a dropped Redis message looks like.
+    const meta = new MemoryMetaStore();
+    const store = new MemoryOpStore();
+    const nodeA = await startServer({ port: 0, metaStore: meta, store });
+    const nodeB = await startServer({
+      port: 0,
+      metaStore: meta,
+      store,
+      reconcileMs: 100,
+    });
+    const post = async (path: string, body: unknown, token?: string) =>
+      (await (
+        await fetch(`http://127.0.0.1:${nodeA.port}${path}`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(token ? { authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify(body),
+        })
+      ).json()) as Record<string, string>;
+    const owner = await post("/auth/register", {
+      email: "anti-entropy@test.local",
+      password: "password123",
+    });
+    const { boardId } = await post("/boards", {}, owner.token);
+    const client = (port: number, device: string): SyncClient =>
+      new SyncClient({
+        doc: new Doc(owner.userId!),
+        boardId: boardId!,
+        token: owner.token!,
+        userId: owner.userId!,
+        device: "",
+        name: device,
+        color: "#3355ff",
+        url: `ws://127.0.0.1:${port}/ws`,
+        socketFactory: (u) =>
+          new WebSocket(u) as unknown as globalThis.WebSocket,
+      });
+    const onB = client(nodeB.port, "b");
+    await onB.start();
+    const onA = client(nodeA.port, "a");
+    await onA.start();
+    const deadline = Date.now() + 5000;
+    while (onA.status !== "open" && Date.now() < deadline)
+      await new Promise((r) => setTimeout(r, 10));
+    await onA.edit([
+      { t: "putObject", objId: "shape", type: "rect" },
+      { t: "zInsert", objId: "shape", parent: null },
+    ]);
+    while (onB.doc.shapes().length === 0 && Date.now() < deadline)
+      await new Promise((r) => setTimeout(r, 10));
+    expect(onB.doc.shapes().map((s) => s.id)).toEqual(["shape"]);
+    onA.close();
+    onB.close();
+    await nodeA.close();
+    await nodeB.close();
   });
 });

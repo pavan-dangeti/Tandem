@@ -3,7 +3,7 @@ import type { Op } from "@tandem/crdt";
 const DB_NAME = "tandem";
 const STORE = "oplog";
 
-export interface StoredOp {
+interface StoredOp {
   boardId: string;
   actor: string;
   seq: number;

@@ -50,6 +50,13 @@ export class RedisBus implements Bus {
     this.sub = this.client.duplicate();
   }
 
+  /** Connect both clients, turning any failure into a startup error. */
+  static async create(url: string): Promise<RedisBus> {
+    const bus = new RedisBus(url);
+    await bus.connect();
+    return bus;
+  }
+
   async connect(): Promise<void> {
     await this.client.connect();
     await this.sub.connect();

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
 import { issueShareToken, verifyShareToken } from "../src/auth.js";
 
 describe("share tokens", () => {
@@ -26,4 +27,24 @@ describe("share tokens", () => {
     expect(verifyShareToken("", "b1")).toBeNull();
     expect(verifyShareToken("nodot", "b1")).toBeNull();
   });
+});
+
+describe("production secrets", () => {
+  it("refuses to start without AUTH_SECRET", () => {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      NODE_ENV: "production",
+      PORT: "0",
+    };
+    delete env.AUTH_SECRET;
+    delete env.SHARE_SECRET;
+    const r = spawnSync("pnpm", ["exec", "tsx", "src/index.ts"], {
+      env,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("AUTH_SECRET");
+    // starting tsx in a subprocess can take seconds on a loaded CI runner
+  }, 20_000);
 });

@@ -68,12 +68,22 @@ export function unpackOps(buf: Uint8Array): Uint8Array[] {
   return out;
 }
 
-// SyncResponse payload: [u32be jsonLen][JSON {stateVector}][packed ops]
+// SyncResponse payload: [u32be jsonLen][JSON header][packed ops]. The header
+// holds the server's state vector, the actor id the client must sign ops as,
+// and the signed device token that keeps that actor across reconnects.
 export function packSyncResponse(
   stateVector: Record<string, number>,
   ops: Uint8Array[],
+  userId?: string,
+  device?: string,
 ): Uint8Array {
-  const json = new TextEncoder().encode(JSON.stringify({ stateVector }));
+  const json = new TextEncoder().encode(
+    JSON.stringify({
+      stateVector,
+      ...(userId !== undefined ? { userId } : {}),
+      ...(device !== undefined ? { device } : {}),
+    }),
+  );
   const opsPayload = packOps(ops);
   const out = new Uint8Array(4 + json.length + opsPayload.length);
   new DataView(out.buffer).setUint32(0, json.length);
@@ -85,6 +95,8 @@ export function packSyncResponse(
 export function unpackSyncResponse(payload: Uint8Array): {
   stateVector: Record<string, number>;
   ops: Uint8Array[];
+  userId?: string;
+  device?: string;
 } {
   const dv = new DataView(
     payload.buffer,
@@ -92,14 +104,23 @@ export function unpackSyncResponse(payload: Uint8Array): {
     payload.byteLength,
   );
   const jsonLen = dv.getUint32(0);
-  const { stateVector } = JSON.parse(
+  const { stateVector, userId, device } = JSON.parse(
     new TextDecoder().decode(payload.subarray(4, 4 + jsonLen)),
-  ) as { stateVector: Record<string, number> };
+  ) as {
+    stateVector: Record<string, number>;
+    userId?: string;
+    device?: string;
+  };
   const ops =
     payload.byteLength > 4 + jsonLen
       ? unpackOps(payload.subarray(4 + jsonLen))
       : [];
-  return { stateVector, ops };
+  return {
+    stateVector,
+    ops,
+    ...(userId !== undefined ? { userId } : {}),
+    ...(device !== undefined ? { device } : {}),
+  };
 }
 
 export interface Presence {

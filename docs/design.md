@@ -85,15 +85,17 @@ authToken, stateVector }`.
 
 ### Persistence
 
-- PostgreSQL: `boards(id, owner_id, created_at)`,
+- PostgreSQL: `users`, `boards(id, owner_id)`,
   `board_members(board_id, user_id, role)`,
-  `share_tokens(token_id, board_id, role, expires_at, signature)`,
-  `ops(board_id, seq, actor_id, hlc, payload, created_at)` append-only,
-  `snapshots(board_id, seq, state, created_at)`.
-- Snapshot every N ops (default 5,000) or T minutes, whichever first;
-  loading a board = latest snapshot + ops since snapshot seq.
-- Compaction: after a snapshot is durable, ops below its seq can be archived
-  and tombstones GC'd once causally stable.
+  `ops(board_id, actor_id, seq, hlc_wall, hlc_logical, data)` append-only with
+  `UNIQUE (board_id, actor_id, seq)`, and `snapshots(board_id, state)`. Share
+  links are stateless HMAC-signed tokens, so they need no table.
+- Snapshot every 2,000 applied ops: the board's ops minus property writes that
+  lost their last-writer-wins race, plus the state vector they cover. Loading a
+  board = latest snapshot + log rows beyond that vector, so load cost follows
+  live state rather than history (measured in `results/coldload.json`).
+- The log is never rewritten. Text and z-order tombstones are GC'd only once
+  causally stable.
 
 ### Client (`apps/web`, React + TypeScript, canvas)
 
@@ -114,22 +116,22 @@ authToken, stateVector }`.
 
 - Email/password or OAuth (provider-agnostic interface; v1 ships email +
   password with bcrypt). Board memberships carry roles.
-- Share links: `/b/<boardId>?token=<signed>`; the token carries role,
+- Share links: `/?board=<boardId>&token=<signed>`; the token carries role,
   expiry, and an HMAC signature (server secret in env). Viewers' messages
   are rejected before authz even reaches persistence.
 
 ### Hosting plan (free tiers only)
 
-- **Proposal:** one Oracle Cloud Always Free VM (4 OCPU / 24 GB Ampere ARM —
-  the M5 Mac dev box mirrors it). Docker Compose runs the sync server,
-  Postgres, and Redis. The web client is a static build served from the same
-  VM or Vercel free tier. `wss://` via a reverse proxy with Let's Encrypt.
+- **Chosen:** one Oracle Cloud Always Free Ampere VM (4 OCPU / 24 GB ARM).
+  `ops/deploy/docker-compose.yml` runs Postgres, Redis, the server, and Caddy,
+  which serves the static client and proxies the API and WebSocket on one
+  origin with automatic Let's Encrypt certificates. Steps are in
+  `docs/runbook.md`.
 - Alternatives considered: Render free web service + Neon Postgres + Upstash
   Redis (simpler, but Render free instances sleep and idle shutdowns break
   WebSocket fan-out latency; Neon free tier pauses compute). Rejected for v1;
   documented so the trade-off is explicit.
-- Cost: $0. All model calls for development tooling use the free keys in
-  `.env`.
+- Cost: $0.
 
 ## Alternatives considered
 

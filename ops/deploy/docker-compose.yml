@@ -1,0 +1,66 @@
+# Production stack for one VM (see docs/runbook.md). Every secret is required:
+# compose refuses to start if one is missing.
+#   cp ops/deploy/.env.example ops/deploy/.env   # then fill it in
+#   docker compose -f ops/deploy/docker-compose.yml --env-file ops/deploy/.env up -d --build
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tandem
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: tandem
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tandem"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  server:
+    build:
+      context: ../..
+      dockerfile: apps/server/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://tandem:${POSTGRES_PASSWORD}@postgres:5432/tandem
+      REDIS_URL: redis://redis:6379
+      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET}
+      SHARE_SECRET: ${SHARE_SECRET:?set SHARE_SECRET}
+      ALLOWED_ORIGINS: https://${DOMAIN:?set DOMAIN}
+      # Caddy is the only way in, so its X-Forwarded-For names the client
+      TRUST_PROXY: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API: https://${DOMAIN}
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy:/data
+    depends_on:
+      - server
+
+volumes:
+  pgdata:
+  caddy:

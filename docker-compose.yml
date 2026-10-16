@@ -34,8 +34,8 @@ services:
       PORT: 8080
       DATABASE_URL: postgres://tandem:tandem@postgres:5432/tandem
       REDIS_URL: redis://redis:6379
-      AUTH_SECRET: ${AUTH_SECRET:-dev-secret-change-in-production}
-      SHARE_SECRET: ${SHARE_SECRET:-dev-secret-change-in-production}
+      # local stack only: dev fallback secrets; ops/deploy requires real ones
+      NODE_ENV: development
     ports:
       - "8080:8080"
     depends_on:
@@ -50,11 +50,40 @@ services:
     image: ghcr.io/shopify/toxiproxy:2.12.0
     profiles: ["chaos"]
     command: ["-host", "0.0.0.0", "-config", "/etc/toxiproxy/proxy.json"]
+    # lets the proxy reach a server running on the host, on Linux as on macOS
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./apps/server/chaos/proxy.json:/etc/toxiproxy/proxy.json:ro
     ports:
       - "8474:8474"
       - "8666:8666"
 
+  # Observability: docker compose --profile full --profile ops up -d
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: ["ops"]
+    volumes:
+      - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    profiles: ["ops"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - ./ops/grafana-provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana-dashboard.json:/var/lib/grafana/dashboards/tandem.json:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+
 volumes:
   pgdata:
+  promdata:
