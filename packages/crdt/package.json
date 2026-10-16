@@ -9,12 +9,13 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run",
+    "test": "vitest run --coverage --coverage.thresholds.lines=85 --coverage.thresholds.functions=85 --coverage.thresholds.branches=85 --coverage.thresholds.statements=85",
     "bench": "tsx bench/run.ts"
   },
   "devDependencies": {
     "@automerge/automerge": "^3.5.0",
     "@types/node": "^26.6.4",
+    "@vitest/coverage-v8": "5.0.3",
     "fast-check": "^4.10.2",
     "tsx": "^4.23.15",
     "yjs": "^13.6.33"
