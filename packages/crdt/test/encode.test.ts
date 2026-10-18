@@ -39,7 +39,7 @@ describe("encode/decode", () => {
   });
 
   it("encodes every op type", () => {
-    const specs: Array<Op["spec"]> = [
+    const specs: Op["spec"][] = [
       { t: "putObject", objId: "a1:1", type: "rect" },
       { t: "deleteObject", objId: "a1:1" },
       { t: "restoreObject", objId: "a1:1" },

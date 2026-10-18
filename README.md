@@ -8,6 +8,12 @@ written here from scratch, then tested and benchmarked against Yjs and Automerge
 
 ![Two browsers editing one board; the left one goes offline, both keep drawing, and the board merges when it reconnects](docs/demo.gif)
 
+[Watch the two-minute demo video](docs/demo.mp4) · [How the demo was produced](docs/demo.md)
+
+The production deployment recipe is ready in the [runbook](docs/runbook.md),
+but this repository does not claim a live URL until an Oracle Cloud VM and
+hostname have been provisioned.
+
 ## Results
 
 All figures come from committed scripts writing to `results/`; a test fails CI
@@ -169,6 +175,8 @@ flowchart LR
 
 Design, alternatives and threat model: [docs/design.md](docs/design.md).
 Operations: [docs/runbook.md](docs/runbook.md).
+Project runtime model cost: [docs/model-cost.md](docs/model-cost.md).
+Proposed GitHub description and topics: [docs/repository-details.md](docs/repository-details.md).
 
 ## Run it locally
 
