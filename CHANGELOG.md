@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-10-23
+
+Security fixes for dependencies and the server container, a green CI on
+`main`, and the demo and launch records. Benchmark results are unchanged
+from 1.0.0: no code that affects them changed.
+
+### Security
+
+- Removed a stale vitest 3 from `packages/protocol`, whose `tinypool` had
+  critical prototype-pollution advisories; the workspace uses vitest 5.
+- Vite 8.3.5, fixing command injection in `launch-editor`.
+- The server image ships production dependencies only and no longer
+  contains npm or corepack, which the runtime never used and which carried
+  high-severity advisories. `pnpm audit` and the Trivy image scan report no
+  HIGH or CRITICAL findings.
+
+### Fixed
+
+- A lint error in the CRDT tests that, with the container scan, had failed
+  CI on `main` since 1.0.0.
+
+### Added
+
+- A two-minute demo video (`docs/demo.mp4`) and how it was produced
+  (`docs/demo.md`).
+- A model-cost record (`docs/model-cost.md`): the project runs no model
+  inference, so its runtime model cost is $0.
+- Proposed repository details (`docs/repository-details.md`).
+
 ## [1.0.0]
 
 The first complete release: a collaborative whiteboard whose CRDT engine,
@@ -67,4 +96,5 @@ Listed in the README. The most important: RGA can interleave concurrent
 same-position text, text authoring trails Yjs several times over, and one
 board's fan-out cost grows with the square of its editors.
 
+[1.1.0]: https://github.com/pavan-dangeti/Tandem/releases/tag/v1.1.0
 [1.0.0]: https://github.com/pavan-dangeti/Tandem/releases/tag/v1.0.0
